@@ -2,7 +2,7 @@
 
 GranthanAI service for organisations: memberships and roles, invites (email, CSV, link, domain), seat enforcement, org policies and the admin audit log. It does not own prices, subscriptions or wallets (billing-service), login (auth-service) or conversations (conversation-service).
 
-Plan: `docs/PHASES.md`. Design: `docs/hld.md`, `docs/lld.md`. Status: Phases 0-1 (skeleton and pure rules).
+Plan: `docs/PHASES.md`. Design: `docs/hld.md`, `docs/lld.md`. Status: Phases 0-2 (skeleton, pure rules, database schema and repositories).
 
 ## Run
 
