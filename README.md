@@ -2,7 +2,7 @@
 
 GranthanAI service for organisations: memberships and roles, invites (email, CSV, link, domain), seat enforcement, org policies and the admin audit log. It does not own prices, subscriptions or wallets (billing-service), login (auth-service) or conversations (conversation-service).
 
-Plan: `docs/PHASES.md`. Design: `docs/hld.md`, `docs/lld.md`. Status: Phases 0-4 (skeleton, pure rules, schema, request plumbing, events and workers).
+Plan: `docs/PHASES.md`. Design: `docs/hld.md`, `docs/lld.md`. Status: Phases 0-5 (skeleton, pure rules, schema, request plumbing, events and workers, seats and staff-run organisations).
 
 ## Run
 
@@ -16,6 +16,8 @@ make db-migrate    # Alembic upgrade to head (Phase 2 schema)
 make topics        # create the Kafka topics this service produces and its DLQ (safe to run twice)
 make dev           # http://127.0.0.1:8010
 ```
+
+Dev helpers: `scripts/make_staff_token.py` prints a staff JWT signed with the dev secret (for `/admin/org/v1`), `scripts/seed_dev.py` seeds a small organisation, `scripts/produce_user_deleted.py` and `scripts/read_topic.py` produce and read Kafka messages.
 
 Check: `GET /live` (process up), `GET /ready` (Postgres, Redis, Kafka; 503 only if Postgres is down, 200 `DEGRADED` if Redis or Kafka is), `GET /metrics`. `X-Correlation-ID` is accepted or generated and echoed back.
 
