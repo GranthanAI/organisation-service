@@ -285,7 +285,7 @@ billing's `plans.yaml` has no feature flags yet. Until it does, `app/core/plan_f
   `closed` is final. Any other transition raises `IllegalTransition`.
   Pure helper `reactivation_target(was_pilot, pilot_ends_at, now) -> OrgStatus`: `pilot` if `was_pilot` and `pilot_ends_at > now`, `pilot_expired` if `was_pilot` and it ended, else `active`.
 - **P1e: Membership.** `services/membership_rules.py`:
-  - last-owner protection: `LastOwner` when an action would leave zero active owners;
+  - last-owner protection: `check_can_end(role, active_owner_count, reason)` with `reason` an `EndReason` (`left`, `removed`, `user_deleted`, `org_closed`). `LastOwner` when `left` or `removed` would leave zero active owners; `user_deleted` and `org_closed` always pass and return `owner_missing=True` when the last owner goes;
   - role change rules;
   - ownership transfer: the target must be an active admin, and the old owner becomes admin.
 - **P1f: Email and domain rules.**

@@ -32,6 +32,15 @@ class MembershipStatus(str, Enum):
     REMOVED = "removed"
 
 
+class EndReason(str, Enum):
+    """Why a membership ended (memberships.end_reason, and `reason` on org.member.left)."""
+
+    LEFT = "left"
+    REMOVED = "removed"
+    USER_DELETED = "user_deleted"
+    ORG_CLOSED = "org_closed"
+
+
 class JoinSource(str, Enum):
     STAFF = "staff"
     INVITE = "invite"
