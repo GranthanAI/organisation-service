@@ -68,3 +68,7 @@ async def ensure_recurring_jobs(session_factory: async_sessionmaker[AsyncSession
             if await job_service.ensure_recurring(session, kind, every, clock):
                 added.append(kind)
     return added
+
+
+# Importing these registers their handlers (they use `job_handler` from this module, defined above).
+from app.services import org_jobs  # noqa: E402,F401

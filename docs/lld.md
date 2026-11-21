@@ -60,10 +60,10 @@ Public routes verify the Bearer JWT (HS256, `JWT_SECRET_KEY`; claims `sub, email
 | --- | --- | --- |
 | root | `GET /live`, `GET /ready` (probes Postgres, Redis, Kafka with a timeout; 503 only if Postgres is down, 200 `DEGRADED` if Redis or Kafka is down; body `{status, required, failed, details}`), `GET /metrics` | **P0 built** |
 | internal | `GET /internal/ping` -> `{"caller": name}` (checks a service token) | **P3 built** |
-| internal | `GET /internal/memberships/{user_id}` and alias `GET /internal/users/{user_id}/membership` -> `{org_id, org_type, role, status}` or 404 | P5 |
-| internal | `GET /internal/orgs/{org_id}` -> `{org_id, name, type, gstin, billing_email, state_code, member_spend_cap_paise}` | P5 |
-| internal | `GET /internal/orgs/{org_id}/members` -> `{user_ids}` (active only, max 10,000, else 422) | P5 |
-| admin `/admin/org/v1` | `POST /orgs`, `GET /orgs?q=&status=&cursor=`, `GET /orgs/{id}`, `POST /orgs/{id}/members`, `POST /orgs/{id}/seats`, `POST /orgs/{id}/suspend`, `/reactivate`, `/close`, `/extend-pilot`; every write needs `reason` (>= 5 chars) and staff `admin` | P5 |
+| internal | `GET /internal/memberships/{user_id}` and alias `GET /internal/users/{user_id}/membership` -> `{org_id, org_type, role, status}` or 404 | **P5 built** |
+| internal | `GET /internal/orgs/{org_id}` -> `{org_id, name, type, gstin, billing_email, state_code, member_spend_cap_paise}` or 404 | **P5 built** |
+| internal | `GET /internal/orgs/{org_id}/members` -> `{user_ids}` (active only, oldest first, max 10,000, else 422) | **P5 built** |
+| admin `/admin/org/v1` | `POST /orgs`, `GET /orgs?q=&status=&cursor=`, `GET /orgs/{id}`, `POST /orgs/{id}/members`, `POST /orgs/{id}/seats`, `POST /orgs/{id}/suspend`, `/reactivate`, `/close`, `/extend-pilot`; every write needs `reason` (5-500 chars), an `Idempotency-Key` and staff `admin` (reads: staff `support` too) | **P5 built** |
 | admin | `POST /orgs/{id}/domains/{domain}/manual-verify` | P9 |
 | v1 `/org/v1` | `GET /me`; `GET/PATCH /orgs/{id}` | P6 |
 | v1 | `GET /orgs/{id}/members`, `PATCH/DELETE /orgs/{id}/members/{user_id}`, `POST /orgs/{id}/leave`, `POST /orgs/{id}/transfer-ownership`, `GET /orgs/{id}/audit` | P6 |
@@ -73,6 +73,46 @@ Public routes verify the Bearer JWT (HS256, `JWT_SECRET_KEY`; claims `sub, email
 | v1 | `GET/PUT /orgs/{id}/policies` (If-Match), `GET /orgs/{id}/usage?from=&to=&format=` | P10 |
 
 Calls out to billing-service (`clients/billing_client.py`, same bearer token, 2 s timeout, one retry): `GET /internal/orgs/{org_id}/usage?from=&to=` (exists); `GET /internal/orgs/{org_id}/subscription` (not built in billing yet; seats come from staff until Phase 10).
+
+## 3b. Phase 5: seats, the join transaction, the billing contract, staff-run organisations [built]
+
+### Join transaction (`services/join_service.py`) - the ONLY code that creates an active membership
+`join(session, org_id, user_id, source, role=MEMBER, invite=None, *, actor, staff=False, clock)`, in the caller's transaction:
+1. lock the `seat_state` row (`FOR UPDATE`; an org without one is locked through `organisations`): every join and every `membership_service.end` of an organisation queue on this row, so two joins can never take the last seat (`tests/postgres/test_seat_race.py`: 20 concurrent joins into 5 free seats admit exactly 5);
+2. refuse a user who already has an active membership (`ALREADY_IN_ORG`, checked first so a repeat join of the same org says so rather than "full"), then `seat_rules.can_join(org status, seats, active count, is_pilot = org is pilot, pilot_max_members = PILOT_MAX_MEMBERS)` and `join_decision_error` (`ORG_INACTIVE`, `SEATS_FULL`, `PILOT_FULL`);
+3. refuse a deleted user (`NotFound`);
+4. insert the membership (uuid7, `active`, `source`, `invited_by` = the invite's creator, `joined_at`); the unique index `ux_memberships_one_active_org` is still the final guard, and an `IntegrityError` is mapped to `AlreadyInOrg` both by `join` (caller's own flush) and by `unit_of_work`;
+5. if an invite was used: `uses += 1`, and for kind email or csv `accepted_at` and `accepted_by` (a link is never "accepted", it only counts uses);
+6. audit `member.joined` (`user_id, source, role, invite_id`);
+7. enqueue `org.member.joined` (with `org_type`, keyed by `user_id`).
+Seats: `seat_state.status` `incomplete` or `ended` (or a missing row) means NO seats are available, because `seats_bought` NULL would otherwise read as "no cap" (payg). The FIRST owner of an organisation is the one exception (seats cannot be bought without an owner). Role `owner` is allowed only when the org has no active owner, or the actor is staff.
+
+### Seats from staff (`services/seat_service.py`, plan table in `app/core/plan_features.py`)
+`set_from_staff(session, org_id, plan_code, variant, seats_bought, period_end, actor, reason)`: `plan_code` in pilot, org_pro, org_max, payg; `variant` must equal the org's type; minimums (from billing's `plans.yaml`): org_pro 50 college / 5 company, org_max 10 college / 5 company, below it is 422 naming the minimum; `payg` forces `seats_bought = NULL` (no cap); `pilot` forces `PILOT_MAX_MEMBERS`; sets `status = active`, `source = staff`. A paid plan on a `pilot` or `pilot_expired` org moves it to `active` (through `org_lifecycle_rules`). Seats below the current active count are allowed: nobody is removed, joins stop, and `over_by` is in the `seats.set` audit details together with the old and new values. A closed org is refused (`ORG_INACTIVE`). With `SEAT_SOURCE=billing`: 409 `SEATS_MANAGED_BY_BILLING` ("seats come from billing"); that is Phase 10.
+
+### Internal routes billing calls (`api/internal/*`, `services/directory_service.py`; bearer service token)
+- `GET /internal/memberships/{user_id}` (alias `/internal/users/{user_id}/membership`): 404 when the user has no ACTIVE membership; otherwise `{org_id, org_type, role, status}`. **`status` (K4):** `"active"` while the org status is `pilot` or `active`; otherwise the org's own status (`suspended`, `pilot_expired`, `closed`). billing grants the organisation plan only when `status == "active"` (`entitlements.py`), so a suspended or expired organisation stops granting its plan while its members stay members. Never a 4xx other than 404 (billing raises on those).
+- `GET /internal/orgs/{org_id}`: `{org_id, name, type, gstin, billing_email, state_code, member_spend_cap_paise}` (cap from `org_policies`, else null); closed orgs are still returned.
+- `GET /internal/orgs/{org_id}/members`: `{user_ids}`, active only, oldest first, at most 10,000 (above that 422 and an error log); 404 for an unknown org.
+- Each is one cheap query; `org_internal_requests_seconds{route}` (histogram) times them. `tests/support/billing_org_client.py` is billing's own parser copied (commit 11a5fed) and run against these routes.
+
+### Staff routes (`/admin/org/v1`, `api/admin/orgs.py`, `services/org_service.py`)
+Writes need staff `admin`, an `Idempotency-Key` (route class `IdempotentRoute`) and a `reason` (5-500 characters, audited; audit `actor_kind` is `staff`); reads allow `support`. Every action also calls `permission_rules.check` with its `STAFF_*` action.
+- `POST /orgs {name, type, legal_name?, gstin?, state_code?, billing_email, owner_email, pilot, reason}` (201): one transaction creates the org (slug from the name: lower-case a-z0-9 and `-`, 3-60 characters, `-2`, `-3` on a clash; status `pilot` with `pilot_ends_at = now + PILOT_DAYS`, or `active`), its `seat_state` (pilot: plan `pilot`, 25 seats, `period_end` = the pilot end; otherwise plan `org_pro`, seats NULL, status `incomplete` = no seats until staff set them), a default `org_policies` row (`lock_modes` false, version 1), the audit row, and the owner: a known, not-deleted user with that email joins as OWNER (source staff); otherwise an open owner invite is created (kind email, role owner, expires in `INVITE_TTL_DAYS`, **token hash only**: the raw token is never returned or logged, and nothing is sent before Phase 7) and the response says `owner_invite_pending: true`. For a pilot: `pilot.remind` at ends-7d and ends-1d and `pilot.expire` at the end (dedupe keys per org; a reminder time already past is not scheduled). GSTIN format (15 characters) and the GST state-code list (`core/constants.py`) are checked.
+- `GET /orgs?q=&status=&cursor=&limit=` (keyset on `(created_at, id)`, newest first; `q` matches name or slug), `GET /orgs/{id}` (adds `seat_state` and `active_count`).
+- `POST /orgs/{id}/members {user_id, role, reason}`: `join(source=staff)`. `POST /orgs/{id}/seats`: `seat_service.set_from_staff`.
+- `POST /orgs/{id}/suspend`: `pilot` or `active` becomes `suspended` (the audit records `was_pilot`). `POST /orgs/{id}/reactivate`: `reactivation_target(was_pilot, pilot_ends_at, now)` where `was_pilot` is read from the seat plan (`pilot`): back to `pilot`, to `pilot_expired` if the pilot ended meanwhile, else `active`.
+- `POST /orgs/{id}/extend-pilot {days 1-30}`: new end = `max(now, pilot_ends_at) + days`; `pilot_expired` returns to `pilot`; the seat `period_end` follows; the open pilot jobs are replaced (same dedupe keys).
+- `POST /orgs/{id}/close`: status `closed` at once (blocks joins), open invites revoked (`revoke_reason = revoked`), the open pilot jobs dropped, and the job `org.close_members` queued.
+
+### Jobs added in Phase 5 (`services/org_jobs.py`, registered in the job registry)
+- `pilot.remind {org_id, days_left}`: enqueues `org.pilot.ending {org_id, ends_at, days_left}` keyed by `org_id`; skipped if the org is no longer a pilot, or if the pilot was extended so the job is stale.
+- `pilot.expire {org_id}`: a pilot whose end has passed becomes `pilot_expired` (audit actor `system`); skipped if it was converted, suspended, closed or extended. Members stay members; `join()` refuses (`ORG_INACTIVE`) and `/internal/memberships` reports `pilot_expired`.
+- `org.close_members {org_id}`: ends active memberships with reason `org_closed` through `membership_service.end`, 200 per transaction (`CLOSE_BATCH_SIZE`); each batch commits alone, so after a crash the retry continues with what is left; each emits `org.member.left`.
+
+### Request plumbing added alongside
+- `known_users` is also filled from logged-in requests (`security/known_user_sync.py`): after a JWT passes, a missing row is created or a changed email updated, in its own short transaction, never for a deleted user, never setting `email_verified_at`, cached "in sync" per `(user_id, email)` for 10 minutes, and a failure is logged and never fails the request.
+- `scripts/create_topics.py` (`make topics`) creates the topics this service produces and its DLQ (3 partitions, replication factor 1 by default; idempotent).
 
 ## 4. Events and workers [P4: built]
 
