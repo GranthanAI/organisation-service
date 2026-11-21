@@ -3,10 +3,10 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.core.exceptions import AlreadyInOrg, DomainTaken, InviteAlreadyOpen
+from app.core.exceptions import AlreadyInOrg, DomainTaken, InviteAlreadyOpen, JoinRequestPending
 from app.db.errors import CONSTRAINT_ERRORS, constraint_name, map_integrity_error
 from app.db.session import unit_of_work
-from app.models.domain import OrgDomain
+from app.models.domain import JoinRequest, OrgDomain
 from app.repositories.domain_repository import DomainRepository
 from app.repositories.invite_repository import InviteRepository
 from app.repositories.membership_repository import MembershipRepository
@@ -28,6 +28,7 @@ def test_the_mapping_table():
         "ux_memberships_one_active_org": AlreadyInOrg,
         "ux_invites_open_email": InviteAlreadyOpen,
         "ux_org_domains_verified": DomainTaken,
+        "ux_join_requests_pending": JoinRequestPending,
     }
 
 
@@ -57,7 +58,7 @@ async def test_open_invite_rules_revoked_accepted_and_other_orgs_are_fine(sessio
     a, b = await two_orgs(session_factory)
     async with unit_of_work(session_factory) as s:
         repo = InviteRepository(s)
-        await repo.add(make_invite(a.id, email="x@amity.edu", revoked_at=NOW))
+        await repo.add(make_invite(a.id, email="x@amity.edu", revoked_at=NOW, revoke_reason="revoked"))
         await repo.add(make_invite(a.id, email="x@amity.edu", accepted_at=NOW))
         await repo.add(make_invite(a.id, email="x@amity.edu"))          # the one open invite
         await repo.add(make_invite(b.id, email="x@amity.edu"))          # another org
@@ -108,3 +109,103 @@ async def test_check_constraint_violations_are_reraised_unchanged(session_factor
             await OrgRepository(s).add(make_org(status="not-a-status"))
     assert constraint_name(exc.value) == "ck_organisations_status"
     assert map_integrity_error(exc.value) is None
+
+
+async def test_pending_join_request_maps_to_join_request_pending(session_factory):
+    a, b = await two_orgs(session_factory)
+    user = uuid7()
+
+    def request(org, status="pending"):
+        return JoinRequest(id=uuid7(), org_id=org.id, user_id=user, domain="amity.edu", status=status, created_at=NOW)
+
+    async with unit_of_work(session_factory) as s:
+        await DomainRepository(s).add_join_request(request(a))
+    with pytest.raises(JoinRequestPending) as exc:
+        async with unit_of_work(session_factory) as s:
+            await DomainRepository(s).add_join_request(request(a))
+    assert exc.value.code == "JOIN_REQUEST_PENDING"
+    # another org, or a decided request, is fine
+    async with unit_of_work(session_factory) as s:
+        await DomainRepository(s).add_join_request(request(b))
+        await DomainRepository(s).add_join_request(request(a, status="declined"))
+        await DomainRepository(s).add_join_request(request(a, status="approved"))
+
+
+# --- the CHECK constraints added by 0005 (each is re-raised unchanged as IntegrityError) ---
+from app.models.idempotency_key import IdempotencyKey  # noqa: E402
+from app.repositories.seat_state_repository import SeatStateRepository  # noqa: E402
+from tests.support.factories import make_seat_state  # noqa: E402
+
+
+async def test_ck_idempotency_keys_state(session_factory):
+    def row(state, **kw):
+        return IdempotencyKey(actor_id=uuid7(), route="POST /x", key=uuid7().hex, request_hash="h", state=state,
+                              created_at=NOW, **kw)
+
+    async with unit_of_work(session_factory) as s:  # a reservation has no status or body yet
+        s.add(row("in_progress", locked_until=NOW))
+        s.add(row("done", status_code=201, response={"ok": True}))
+    with pytest.raises(IntegrityError) as exc:
+        async with unit_of_work(session_factory) as s:
+            s.add(row("started"))
+    assert constraint_name(exc.value) == "ck_idempotency_keys_state"
+
+
+@pytest.mark.parametrize("status", ["incomplete", "active", "past_due", "suspended", "cancelling", "ended"])
+async def test_ck_seat_state_status_accepts_billing_statuses(session_factory, status):
+    org = make_org()
+    async with unit_of_work(session_factory) as s:
+        await OrgRepository(s).add(org)
+        await SeatStateRepository(s).add(make_seat_state(org.id, status=status))
+
+
+async def test_ck_seat_state_status_rejects_anything_else(session_factory):
+    org = make_org()
+    with pytest.raises(IntegrityError) as exc:
+        async with unit_of_work(session_factory) as s:
+            await OrgRepository(s).add(org)
+            await SeatStateRepository(s).add(make_seat_state(org.id, status="paused"))
+    assert constraint_name(exc.value) == "ck_seat_state_status"
+
+
+@pytest.mark.parametrize("reason", ["revoked", "expired", "resent", "user_deleted"])
+async def test_ck_invites_revoke_reason_accepts_the_four_reasons(session_factory, reason):
+    org = make_org()
+    async with unit_of_work(session_factory) as s:
+        await OrgRepository(s).add(org)
+        await InviteRepository(s).add(make_invite(org.id, revoked_at=NOW, revoke_reason=reason))
+
+
+async def test_ck_invites_revoke_reason_rejects_unknown(session_factory):
+    org = make_org()
+    with pytest.raises(IntegrityError) as exc:
+        async with unit_of_work(session_factory) as s:
+            await OrgRepository(s).add(org)
+            await InviteRepository(s).add(make_invite(org.id, revoked_at=NOW, revoke_reason="because"))
+    assert constraint_name(exc.value) == "ck_invites_revoke_reason"
+
+
+@pytest.mark.parametrize("fields", [{"revoked_at": NOW}, {"revoke_reason": "revoked"}])
+async def test_ck_invites_revoked_together(session_factory, fields):
+    org = make_org()
+    with pytest.raises(IntegrityError) as exc:
+        async with unit_of_work(session_factory) as s:
+            await OrgRepository(s).add(org)
+            await InviteRepository(s).add(make_invite(org.id, **fields))
+    assert constraint_name(exc.value) == "ck_invites_revoked_together"
+
+
+async def test_an_expired_invite_closed_with_reason_expired_frees_the_open_email_slot(session_factory):
+    org = make_org()
+    async with unit_of_work(session_factory) as s:
+        await OrgRepository(s).add(org)
+        old = await InviteRepository(s).add(make_invite(org.id, email="late@amity.edu"))
+    with pytest.raises(InviteAlreadyOpen):
+        async with unit_of_work(session_factory) as s:
+            await InviteRepository(s).add(make_invite(org.id, email="late@amity.edu"))
+    async with unit_of_work(session_factory) as s:  # the Phase 7 rule: past expires_at, close it as revoked/expired
+        repo = InviteRepository(s)
+        row = await repo.get(old.id)
+        row.revoked_at, row.revoke_reason = NOW, "expired"
+        await repo.save(row)
+        await repo.add(make_invite(org.id, email="late@amity.edu"))

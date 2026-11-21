@@ -44,5 +44,6 @@ class Invite(Base):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     accepted_by: Mapped[uuid.UUID | None] = mapped_column()
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[uuid.UUID | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
