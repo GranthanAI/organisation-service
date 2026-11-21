@@ -28,34 +28,43 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 BLACKLIST_PREFIX = "blacklist:"   # auth-service writes "blacklist:<jti>" into the shared Redis on logout
 
 
+def bearer_token(request: Request) -> str | None:
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None
+
+
+async def authenticate_user(method: str, token: str | None, redis: Redis, session: AsyncSession) -> CurrentUser:
+    """The one identity check, shared by get_current_user and IdempotentRoute (before it replays a stored
+    response): verify the JWT, refuse a revoked jti and a deleted user. Every refusal is a bare 401.
+
+    Redis down means revocation cannot be checked: reads go through (logged), writes get 503."""
+    if not token:
+        raise Unauthenticated()
+    user = CurrentUser.from_claims(verify_jwt_token(token))
+    try:
+        revoked = bool(await redis.exists(f"{BLACKLIST_PREFIX}{user.jti}"))
+    except Exception:
+        if method in SAFE_METHODS:
+            logger.warning("token blacklist unavailable, allowing read", method=method)
+            revoked = False
+        else:
+            raise UpstreamUnavailable("Cannot verify the session right now") from None
+    if revoked:
+        raise Unauthenticated()
+    known = await KnownUserRepository(session).get(user.id)
+    if known is not None and known.deleted_at is not None:
+        raise Unauthenticated()
+    return user
+
+
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     redis: Redis = Depends(get_redis_client),
     session: AsyncSession = Depends(get_db_session),
 ) -> CurrentUser:
-    """Verify the Bearer JWT, refuse revoked tokens and deleted users. Every refusal is a bare 401."""
-    if credentials is None or not credentials.credentials:
-        raise Unauthenticated()
-    user = CurrentUser.from_claims(verify_jwt_token(credentials.credentials))
-
-    try:
-        revoked = bool(await redis.exists(f"{BLACKLIST_PREFIX}{user.jti}"))
-    except Exception:
-        # Redis is down, so revocation cannot be checked. Reads go through (logged); anything that changes
-        # state is refused rather than trusting a possibly logged-out token.
-        if request.method in SAFE_METHODS:
-            logger.warning("token blacklist unavailable, allowing read", method=request.method)
-            revoked = False
-        else:
-            raise UpstreamUnavailable("Cannot verify the session right now") from None
-    if revoked:
-        raise Unauthenticated()
-
-    known = await KnownUserRepository(session).get(user.id)
-    if known is not None and known.deleted_at is not None:
-        raise Unauthenticated()
-    return user
+    token = credentials.credentials if credentials else None
+    return await authenticate_user(request.method, token, redis, session)
 
 
 def require_staff(min_role: StaffRole) -> Callable[..., Awaitable[CurrentUser]]:
@@ -76,7 +85,7 @@ def require_org_role(action: Action) -> Callable[..., Awaitable[OrgContext]]:
     cannot be probed. Staff do not use this: they have admin routes.
 
     An OwnRoleOnly cell (an admin removing someone) passes here: it depends on the target's role, which only the
-    use case knows, so the service must call `permission_rules.check(action, role, target_role)`."""
+    use case knows. Call `ctx.check_target(target_role)` for remove and role changes (Phases 5-6)."""
 
     async def dependency(
         org_id: uuid.UUID,
@@ -89,6 +98,6 @@ def require_org_role(action: Action) -> Callable[..., Awaitable[OrgContext]]:
         role = Role(membership.role)
         if permission_rules.permission_for(action, role) is not Permission.OWN_ROLE_ONLY:
             permission_rules.check(action, role)
-        return OrgContext(org_id=org_id, user=user, role=role, membership_id=membership.id)
+        return OrgContext(org_id=org_id, user=user, role=role, membership_id=membership.id, action=action)
 
     return dependency
