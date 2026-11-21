@@ -27,7 +27,7 @@ def imported_modules(source: str) -> list[str]:
             elif node.module:
                 mods.append(node.module)
                 # `from app import models` imports the models package.
-                mods += [f"{node.module}.{a.name}" for a in node.names if node.module == "app"]
+                mods += [f"{node.module}.{a.name}" for a in node.names if node.module in ("app", "app.core")]
     return mods
 
 
@@ -38,7 +38,9 @@ def rules_violations(source: str) -> list[str]:
         if mod.startswith("."):
             problems.append(f"relative import {mod}")
         elif top == "app":
-            if not (mod == "app.core" or mod.startswith("app.core.")):
+            if mod == "app.core.config":
+                problems.append("imports app.core.config (rules take configuration as arguments)")
+            elif not (mod == "app.core" or mod.startswith("app.core.")):
                 problems.append(f"imports {mod} (only app.core is allowed)")
         elif top not in STDLIB:
             problems.append(f"imports third-party {mod}")
@@ -98,6 +100,9 @@ def test_repositories_never_import_api(path):
     "from app.db.session import unit_of_work",
     "from app.services import seat_rules",
     "from app.api.deps import get_probes",
+    "from app.core.config import settings",
+    "import app.core.config",
+    "from app.core import config",
     "import sqlalchemy",
     "from . import sibling",
     "from datetime import datetime\nx = datetime.now()",
@@ -109,7 +114,7 @@ def test_rules_checker_flags_violations(source):
 
 
 @pytest.mark.parametrize("source", [
-    "import enum, re, hmac\nfrom app.core.enums import Role\nfrom app.core.config import settings",
+    "import enum, re, hmac\nfrom app.core.enums import Role\nfrom app.core.clock import Clock",
     "from dataclasses import dataclass\nfrom datetime import datetime, timedelta, timezone",
 ])
 def test_rules_checker_accepts_clean_files(source):

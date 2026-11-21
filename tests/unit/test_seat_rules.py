@@ -1,7 +1,17 @@
+import inspect
+
 import pytest
 
 from app.core.enums import OrgStatus
-from app.services.seat_rules import JoinDecision, can_join
+from app.services.seat_rules import JoinDecision
+from app.services.seat_rules import can_join as _can_join
+
+PILOT_MAX = 25
+
+
+def can_join(status, seats, active, is_pilot, pilot_max_members=PILOT_MAX):
+    return _can_join(status, seats, active, is_pilot, pilot_max_members=pilot_max_members)
+
 
 OK, FULL, PILOT_FULL, INACTIVE = (JoinDecision.OK, JoinDecision.SEATS_FULL, JoinDecision.PILOT_FULL,
                                   JoinDecision.ORG_INACTIVE)
@@ -60,3 +70,10 @@ def test_inactive_orgs_refuse_before_counting_seats(status, seats):
 @pytest.mark.parametrize("status", [OrgStatus.PILOT, OrgStatus.ACTIVE])
 def test_joinable_states(status):
     assert can_join(status, None, 0, is_pilot=False) is OK
+
+
+def test_pilot_max_members_is_a_required_keyword():
+    param = inspect.signature(_can_join).parameters["pilot_max_members"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY and param.default is inspect.Parameter.empty
+    with pytest.raises(TypeError):
+        _can_join(OrgStatus.PILOT, None, 0, True)  # type: ignore[call-arg]
