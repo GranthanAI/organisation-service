@@ -1,6 +1,6 @@
 """Mounts the route groups: health (root), v1 (/org/v1), internal (/internal), admin (/admin/org/v1).
 
-Business routes arrive in later phases; admin is added in Phase 5.
+Routes: health at the root, the organisation API (/org/v1), billing's internal routes, and the staff routes.
 """
 
 from fastapi import APIRouter, Depends
@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from app.api.admin import orgs as admin_orgs
 from app.api.internal import memberships, orgs, ping
 from app.api.internal.timing import time_request
-from app.api.v1 import audit, health, me, members
+from app.api.v1 import audit, health, invites, me, members
 from app.api.v1 import orgs as v1_orgs
 from app.security.service_tokens import require_service
 
@@ -22,6 +22,8 @@ v1_router.include_router(me.router)
 v1_router.include_router(v1_orgs.router)
 v1_router.include_router(members.router)
 v1_router.include_router(audit.router)
+v1_router.include_router(invites.public_router)    # GET /org/v1/invites/preview: the one route without a JWT
+v1_router.include_router(invites.router)
 api_router.include_router(v1_router)
 
 # Service-to-service routes. Never routed by the gateway; every one needs a service token.

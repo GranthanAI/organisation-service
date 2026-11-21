@@ -57,6 +57,8 @@ RECURRING: dict[str, timedelta] = {
     "idempotency.cleanup": timedelta(hours=1),
     "processed_events.cleanup": timedelta(days=1),
     "outbox.cleanup": timedelta(days=1),
+    "invites.expire": timedelta(days=1),
+    "invites.purge": timedelta(days=1),
 }
 
 
@@ -71,4 +73,4 @@ async def ensure_recurring_jobs(session_factory: async_sessionmaker[AsyncSession
 
 
 # Importing these registers their handlers (they use `job_handler` from this module, defined above).
-from app.services import org_jobs  # noqa: E402,F401
+from app.services import invite_jobs, org_jobs  # noqa: E402,F401

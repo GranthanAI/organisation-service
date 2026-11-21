@@ -152,7 +152,7 @@ Every event carries `event_id`, `schema_version: "1.0"` and `occurred_at` (ISO U
 | `org.member.joined` | `{org_id, user_id, role, org_type, source}` | `user_id` | billing-service (exists) |
 | `org.member.left` | `{org_id, user_id, role, org_type, reason: left\|removed\|user_deleted\|org_closed}` | `user_id` | billing-service (exists) |
 | `org.policy.changed` | `{org_id, version, lock_modes, approved_mode_ids, member_spend_cap_paise}` | `org_id` | conversation-service (later) |
-| `org.invite.created` | `{org_id, invite_id, email, org_name, inviter_name, accept_url, expires_at}` | `org_id` | notification-service (later) |
+| `org.invite.created` | `{org_id, invite_id, email, role, org_name, inviter_name, expires_at}` (**no token and no URL**: the raw token is never stored, so it cannot be in an event; see the token design in lld.md §3d) | `org_id` | notification-service (later) |
 | `org.pilot.ending` | `{org_id, ends_at, days_left}` | `org_id` | notification-service (later) |
 | `organisation.dlq` | dead letters of the topics this service consumes | n/a | n/a |
 
@@ -522,10 +522,10 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 
 - **P7a: Creating invites.**
   - `POST /org/v1/orgs/{id}/invites`: owner or admin; `{emails: [..≤50], role}`.
-  - For each email it skips anyone already a member, refuses an open duplicate (`INVITE_ALREADY_OPEN`), and creates the invite with a token hash, `expires_at = now + INVITE_TTL_DAYS`, and an `org.invite.created` event carrying the raw token in `accept_url` (`{APP_BASE_URL}/join/<token>`).
+  - For each email it skips anyone already a member, refuses an open duplicate (`INVITE_ALREADY_OPEN`), and creates the invite with a token hash, `expires_at = now + INVITE_TTL_DAYS`, and an `org.invite.created` event (no token, no URL). The raw token is never stored: it is `base64url(HMAC-SHA256(INVITE_TOKEN_SECRET, "invite:<id>:<token_version>"))`, recomputed at send time by the `invite.send` job; only its SHA-256 is saved. Migration `0007_invite_tokens` adds `token_version`, `resend_count`, `last_sent_at`, `purged_at`.
   - The raw token is never stored or logged.
   - Daily limit `INVITES_PER_ORG_PER_DAY`. Free seats are checked as a warning only; acceptance enforces them.
-- **P7b: Sending email (until notification-service exists).** `email/sender.py` has `console` and `smtp` senders, with the same production refusal of `console` as auth-service. `email/templates.py` has the invite email (plain text and HTML, with org name, inviter name, link and expiry). A small consumer of its own outbox events (`workers/invite_email_worker.py`) sends it. Turn it off with `INVITE_EMAILS_VIA=notification` once notification-service exists.
+- **P7b: Sending email (until notification-service exists).** `email/sender.py` has `console` and `smtp` senders, with the same production refusal of `console` as auth-service. `email/templates.py` has the invite email (plain text and HTML, with org name, inviter name, link and expiry). The in-process job `invite.send {invite_id, token_version}` sends it (stale versions are skipped). It is a job, not a consumer, so the link can be derived at send time. Turn it off with `INVITE_EMAILS_VIA=notification` once notification-service exists.
 - **P7c: Preview.** `GET /org/v1/invites/preview?token=` needs **no JWT**. It returns `{org_name, org_type, inviter_name, email_hint: "s***@amity.edu", expires_at}`, or `INVITE_INVALID`/`INVITE_EXPIRED`. Rate-limited per IP.
 - **P7d: Accepting.** `POST /org/v1/invites/accept` `{token}` with a JWT:
   - for email and CSV invites, the token email must equal the JWT `email`, else `INVITE_EMAIL_MISMATCH`;
@@ -684,5 +684,5 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 | api-gateway | Route `/org/v1/*` and `/admin/org/v1/*` to `ORGANISATION_SERVICE_URL=http://127.0.0.1:8010`, **forwarding the `Authorization` header** (organisation-service verifies the JWT itself); make `GET /org/v1/invites/preview` a public path (exact match, Phase 7); **never route `/internal/*`** (those are service-to-service, with service tokens) | Phase 6 (the routes exist now) |
 | auth-service | Keep `user-events` and `user.deleted` shapes stable; long term, add `email_verified` to the JWT | Phase 9 |
 | granthan-frontend | `/join/<token>` page that keeps the token through signup; org admin pages for members, invites, CSV upload with error report, links, domains, policies, usage, audit | Phases 6–10 |
-| notification-service (new) | Consume `org.invite.created` and `org.pilot.ending`; then set `INVITE_EMAILS_VIA=notification` here | After Phase 10 |
+| notification-service (new) | Consume `org.invite.created` and `org.pilot.ending`; then set `INVITE_EMAILS_VIA=notification` here. `org.invite.created` has no link, so organisation-service must first get an **internal route that returns the accept link for an invite** (e.g. `GET /internal/invites/{invite_id}/accept-url`, service token, derives the token for the current `token_version`; **not built yet**) | After Phase 10 |
 | conversation-service | Consume `org.policy.changed` and `org.member.left` for mode locking and shared projects | Release plan Phase 3 |

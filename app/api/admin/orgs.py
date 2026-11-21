@@ -27,10 +27,10 @@ from app.schemas.admin import (
     SeatStateOut,
     SetSeatsIn,
 )
-from app.schemas.org_v1 import AuditPageOut, MemberPageOut
+from app.schemas.org_v1 import AuditPageOut, InviteResultOut, MemberPageOut
 from app.security.dependencies import require_staff
 from app.security.models import CurrentUser
-from app.services import audit_query_service, org_member_service, org_service, seat_service
+from app.services import audit_query_service, invite_service, org_member_service, org_service, seat_service
 from app.services.permission_rules import Action
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
@@ -145,3 +145,14 @@ async def staff_audit(
     """The whole audit log, staff reasons and staff_ details included."""
     await org_service.org_detail(session, org_id)
     return await audit_query_service.list_audit(session, org_id, cursor, limit, action, actor_id, staff_view=True)
+
+
+@router.post("/{org_id}/invites/{invite_id}/resend", response_model=InviteResultOut)
+async def staff_resend_invite(org_id: uuid.UUID, invite_id: uuid.UUID, body: ReasonIn, actor: CurrentUser = Writer,
+                              factory: async_sessionmaker = Depends(get_session_factory_dep),
+                              clock: Clock = Depends(get_clock)):
+    """Resend an invite (typically the owner invite of a new organisation) with a new link. Needs a reason."""
+    org_service.require_staff_action(Action.INVITE, actor)
+    async with unit_of_work(factory) as session:
+        invite = await invite_service.resend(session, org_id, invite_id, actor, staff=True, reason=body.reason, clock=clock)
+    return InviteResultOut(email=str(invite.email), result="resent", invite_id=invite.id)

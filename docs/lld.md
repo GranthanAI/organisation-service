@@ -153,6 +153,36 @@ Checks in order: the org is not closed; `new_role` is not owner (422); the calle
 ### `membership_service.transfer_ownership(session, org_id, to_user_id, actor: OrgContext)`
 Lock order as above; the caller must still be the owner; `membership_rules.plan_transfer` requires the target to be an active admin (`InvalidTransferTarget`, 422); swaps the roles; audits `member.role_changed` for both and `org.ownership_transferred {from_user_id, to_user_id}`. There is always exactly one owner afterwards.
 
+## 3d. Phase 7: email invites [built]
+
+### Token design (`security/tokens.py`)
+The raw invite token is **never stored, logged or put in an event**. `invite_token(invite_id, token_version) = base64url_nopad(HMAC-SHA256(INVITE_TOKEN_SECRET, f"invite:{invite_id}:{token_version}"))`; the database keeps only `token_hash = sha256(token).hexdigest()` (`uq_invites_token_hash`). `INVITE_TOKEN_SECRET` must be 32+ bytes; production refuses the dev default or a short one. Resend bumps `token_version`, so the old link stops matching (404 on preview). Phase 5 owner invites use the same scheme (version 1); a pre-0007 invite with a random hash gets its derived hash at the first send or resend.
+
+### Migration `0007_invite_tokens`
+`invites.token_version` int NOT NULL DEFAULT 1 (CHECK >= 1), `resend_count` int NOT NULL DEFAULT 0 (CHECK >= 0), `last_sent_at`, `purged_at`. No email CHECK existed to relax (links already allow a NULL email). Downgrade drops the columns.
+
+### Routes (JWT unless noted; writes use `IdempotentRoute`)
+| Route | Who | Notes |
+| --- | --- | --- |
+| `POST /org/v1/orgs/{id}/invites {emails 1..50, role member\|admin}` | INVITE (owner/admin; only the owner may invite an admin) | bucket `invite_create` plus `INVITES_PER_ORG_PER_DAY` (UTC day, 429); org must be pilot/active (`ORG_INACTIVE`); per-email result `created`, `invalid_email`, `duplicate_in_request`, `already_member`, `in_another_org`, `open_invite_exists`; an open invite past `expires_at` is closed (`expired`) first; response `{results, seats: {used, bought, open_invites, warning}}` |
+| `GET /org/v1/invites/preview?token=` | **public, no JWT, not idempotent** | bucket `invite_preview` per IP; unknown, revoked, purged, accepted, or org not pilot/active: 404 `INVITE_INVALID`; expired: 410 `INVITE_EXPIRED`; returns `{org_name, org_type, inviter_name (fallback "An organisation admin"), role, email_hint "s***@amity.edu", expires_at}` |
+| `POST /org/v1/invites/accept {token}` | any logged-in user | bucket `invite_accept`; locks the invite `FOR UPDATE`; expired: 410 and the invite is closed as `expired` (committed before the error); JWT email must equal the invite email (403 `INVITE_EMAIL_MISMATCH`); the same user again gets 200 with the same body; anyone else after acceptance gets 404 `INVITE_INVALID`; then `join_service.join(source=invite)`; refusals (`SEATS_FULL`, `PILOT_FULL`, `ALREADY_IN_ORG`, `ORG_INACTIVE`, `UNKNOWN_USER`) leave the invite open; 200 `{org_id, org_name, role}` |
+| `GET /org/v1/orgs/{id}/invites?status=&cursor=&limit=` | VIEW_INVITES | status is computed (open, accepted, expired, revoked), newest first, keyset `(created_at, id)`, never the hash |
+| `POST /org/v1/orgs/{id}/invites/{invite_id}/resend` | INVITE | not accepted or revoked (a merely late one is revived); at most 3 (`INVITE_RESEND_MAX`), then 429 `RATE_LIMITED` with `Retry-After`; `token_version + 1`, new hash and expiry, queues `invite.send`, audit `invite.resent` |
+| `DELETE /org/v1/orgs/{id}/invites/{invite_id}` | INVITE | 204; already closed is a no-op with no audit |
+| `POST /admin/org/v1/orgs/{id}/invites/{invite_id}/resend {reason}` | staff | same as resend, audited as staff |
+
+**api-gateway must treat exactly `GET /org/v1/invites/preview` as a public path** (every other route needs the JWT).
+
+### Sending (`email/`, `services/invite_jobs.py`)
+`EmailSender` port: `ConsoleEmailSender` (logs "DEV EMAIL (not sent)"; refused in production), `SmtpEmailSender` (blocking smtplib in a thread, 10 s timeout). `email/templates.py` renders subject `<inviter> invited you to <org> on GranthanAI`, plain text and HTML (everything html-escaped, subject on one line, expiry date in IST like `23 Nov 2026`, no tracking or images, "If you didn't expect this, ignore this email"). `INVITE_EMAILS_VIA=local` queues the in-process job `invite.send {invite_id, token_version}` in the creating transaction; the job derives the token at send time, skips stale versions, closed or expired invites and an org that is not pilot/active, sets `last_sent_at`, and logs neither the link nor the address. `INVITE_EMAILS_VIA=notification` queues nothing: notification-service consumes `org.invite.created` and will need an internal accept-url route (**not built**; listed in PHASES.md "Changes needed in other repos").
+
+### Jobs (recurring, daily)
+`invites.expire`: open invites past `expires_at` get `revoked_at = now`, `revoke_reason = 'expired'`, in batches of 500. `invites.purge`: never-accepted invites created more than 90 days ago get `email = NULL`, `purged_at = now`, in batches of 500.
+
+### Audit view and joins (M1, M2)
+The org audit view shows staff rows with `actor_id` null and `actor_label` "GranthanAI staff", system and service rows "GranthanAI", user rows their id and name or email. `join()` refuses a user with no `known_users` row: 422 `UNKNOWN_USER` (a deleted user stays 404).
+
 ## 4. Events and workers [P4: built]
 
 ### Envelope
@@ -163,7 +193,7 @@ Produced events are flat JSON objects (`app/events/schemas.py`, `extra="forbid"`
 | `org.member.joined` | `org_id, user_id, role, org_type, source` | `user_id` |
 | `org.member.left` | `org_id, user_id, role, org_type, reason: left\|removed\|user_deleted\|org_closed` | `user_id` |
 | `org.policy.changed` | `org_id, version, lock_modes, approved_mode_ids, member_spend_cap_paise` | `org_id` |
-| `org.invite.created` | `org_id, invite_id, email, org_name, inviter_name, accept_url, expires_at` | `org_id` |
+| `org.invite.created` | `org_id, invite_id, email, role, org_name, inviter_name, expires_at` (no token, no URL) | `org_id` |
 | `org.pilot.ending` | `org_id, ends_at, days_left` | `org_id` |
 | `organisation.dlq` | dead letters (below) | original key |
 
@@ -293,7 +323,7 @@ Redis fixed windows (`rl:<bucket>:<who>:<window>`), `INCR` and `EXPIRE` in one p
 
 ## 8. Settings
 
-See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `SERVICE_PORT=8010`, `DATABASE_URL`, `DB_*`, `REDIS_URL`, `KAFKA_*`), identity (`JWT_*`, `INTERNAL_SERVICE_TOKENS`), billing (`BILLING_BASE_URL`, `BILLING_SERVICE_TOKEN`), `WORKERS_ENABLED`, email (`EMAIL_SENDER`, `SMTP_*`, `APP_BASE_URL`), invites (`INVITE_TTL_DAYS`, `LINK_MAX_TTL_DAYS`, `INVITES_PER_ORG_PER_DAY`, `CSV_MAX_*`), pilots and seats (`PILOT_MAX_MEMBERS`, `PILOT_DAYS`, `SEAT_SOURCE`), `DOMAIN_AUTO_JOIN_ENABLED`. Production refuses dev defaults (`Settings._production_problems`).
+See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `SERVICE_PORT=8010`, `DATABASE_URL`, `DB_*`, `REDIS_URL`, `KAFKA_*`), identity (`JWT_*`, `INTERNAL_SERVICE_TOKENS`), billing (`BILLING_BASE_URL`, `BILLING_SERVICE_TOKEN`), `WORKERS_ENABLED`, email (`EMAIL_SENDER`, `SMTP_*`, `APP_BASE_URL`), invites (`INVITE_TTL_DAYS`, `LINK_MAX_TTL_DAYS`, `INVITES_PER_ORG_PER_DAY`, `INVITE_TOKEN_SECRET`, `INVITE_EMAILS_VIA`, `CSV_MAX_*`), pilots and seats (`PILOT_MAX_MEMBERS`, `PILOT_DAYS`, `SEAT_SOURCE`), `DOMAIN_AUTO_JOIN_ENABLED`. Production refuses dev defaults (`Settings._production_problems`).
 
 ## 9. Defaults D1-D6
 
