@@ -45,6 +45,16 @@ Always use `127.0.0.1`, never `localhost` (Windows resolves it to IPv6 first).
 - **We call billing**: `GET /internal/orgs/{org_id}/usage` (exists); `/subscription` not built yet.
 - **We publish** (outbox): `org.member.joined`, `org.member.left` (always with `org_type`, keyed by `user_id`), `org.policy.changed`, `org.invite.created`, `org.pilot.ending`; dead letters to `organisation.dlq` (Phase 4).
 - **We consume**: `user-events` (`UserRegistered`, `EmailVerified`), `user.deleted`, later `subscription.changed`.
-- **Identity**: public routes verify the auth-service JWT (HS256); staff is the `roles` claim; internal routes use service tokens.
+- **Identity**: public routes verify the auth-service JWT (HS256, issuer `https://auth.granthan.com`, revoked `jti`s checked in Redis); staff is the `roles` claim; internal routes use service tokens.
+
+### Service tokens
+
+`INTERNAL_SERVICE_TOKENS` is `name:token,name:token`. **billing-service's `ORG_SERVICE_TOKEN` must equal the `billing:` entry here** (dev: `dev-billing-token`; production: a unique 32+ character token on both sides). Check a token with:
+
+```
+curl http://127.0.0.1:8010/internal/ping -H "Authorization: Bearer <token>"     # {"caller":"billing"}
+```
+
+Errors are `application/problem+json` with a `code` and the request's `correlation_id`; every public and admin POST needs an `Idempotency-Key` header.
 
 Money is integer paise; times are UTC and come from `app/core/clock.py`; ids are UUIDv7; the schema changes only through Alembic. In production the service refuses to start with a development default.

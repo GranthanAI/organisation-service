@@ -56,6 +56,7 @@ Public routes verify the Bearer JWT (HS256, `JWT_SECRET_KEY`; claims `sub, email
 | Group | Route | Phase |
 | --- | --- | --- |
 | root | `GET /live`, `GET /ready` (probes Postgres, Redis, Kafka with a timeout; 503 only if Postgres is down, 200 `DEGRADED` if Redis or Kafka is down; body `{status, required, failed, details}`), `GET /metrics` | **P0 built** |
+| internal | `GET /internal/ping` -> `{"caller": name}` (checks a service token) | **P3 built** |
 | internal | `GET /internal/memberships/{user_id}` and alias `GET /internal/users/{user_id}/membership` -> `{org_id, org_type, role, status}` or 404 | P5 |
 | internal | `GET /internal/orgs/{org_id}` -> `{org_id, name, type, gstin, billing_email, state_code, member_spend_cap_paise}` | P5 |
 | internal | `GET /internal/orgs/{org_id}/members` -> `{user_ids}` (active only, max 10,000, else 422) | P5 |
@@ -87,18 +88,52 @@ Always send `org_type` on member events (billing defaults to `company` otherwise
 
 Consumed: `user-events` (`UserRegistered`, `EmailVerified` inside `{event_type, payload, created_at}`; other types ignored), `user.deleted` (`{event_type, schema_version, event_id, occurred_at, user_id}`), `subscription.changed` (Phase 10 hint). Deduplicated on `processed_events`; 3 retries, then `organisation.dlq`.
 
-## 5. Errors (`application/problem+json`: `{type, title, status, code, detail, correlation_id}`) [P3]
+## 5. Errors and request plumbing [P3: built]
 
-| Code | HTTP |
-| --- | --- |
-| `SEATS_FULL`, `PILOT_FULL`, `ALREADY_IN_ORG`, `LAST_OWNER`, `ORG_INACTIVE`, `INVITE_ALREADY_OPEN`, `DOMAIN_TAKEN` | 409 |
-| `INVITE_INVALID` | 404 |
-| `INVITE_EXPIRED` | 410 |
-| `INVITE_EMAIL_MISMATCH`, `EMAIL_NOT_VERIFIED`, `FEATURE_NOT_IN_PLAN`, `FORBIDDEN_ROLE` | 403 |
-| `VERSION_CONFLICT` | 412 |
-| `PUBLIC_EMAIL_DOMAIN`, `CSV_INVALID`, `VALIDATION_ERROR`, `IDEMPOTENCY_MISMATCH` | 422 |
-| `RATE_LIMITED` | 429 |
-| `UPSTREAM_UNAVAILABLE` | 503 |
+Every error is `application/problem+json`: `{type, title, status, code, detail, correlation_id}` (`app/middleware/exception_handler.py`). The code-to-status map is ONE dict, `app/core/error_codes.py:ERROR_STATUS`; `tests/api/test_problem_json.py` checks that every `DomainError` subclass has an entry and that the statuses match this table.
+
+| Code | HTTP | Raised as |
+| --- | --- | --- |
+| `UNAUTHENTICATED` | 401 (`WWW-Authenticate: Bearer`) | `Unauthenticated`: no, bad, expired, revoked or deleted-user credentials; the detail never says which |
+| `INVITE_EMAIL_MISMATCH`, `EMAIL_NOT_VERIFIED`, `FEATURE_NOT_IN_PLAN`, `FORBIDDEN_ROLE` | 403 | `InviteEmailMismatch`, `EmailNotVerified`, `FeatureNotInPlan`, `ForbiddenRole` |
+| `NOT_FOUND`, `INVITE_INVALID` | 404 | `NotFound` (also: not a member of the org in the path), `InviteInvalid` |
+| `INVITE_EXPIRED` | 410 | `InviteExpired` |
+| `SEATS_FULL`, `PILOT_FULL`, `ALREADY_IN_ORG`, `LAST_OWNER`, `ORG_INACTIVE`, `INVITE_ALREADY_OPEN`, `DOMAIN_TAKEN`, `JOIN_REQUEST_PENDING` | 409 | the same names in CamelCase |
+| `IDEMPOTENCY_IN_PROGRESS` | 409 (`Retry-After`) | `IdempotencyInProgress` |
+| `VERSION_CONFLICT` | 412 | `VersionConflict` |
+| `PUBLIC_EMAIL_DOMAIN`, `CSV_INVALID`, `VALIDATION_ERROR`, `IDEMPOTENCY_MISMATCH` | 422 | `PublicEmailDomain`, `CsvInvalid`, `ValidationFailed` (also illegal transitions and role changes), `IdempotencyMismatch` |
+| `RATE_LIMITED` | 429 (`Retry-After`) | `RateLimited` |
+| `UPSTREAM_UNAVAILABLE` | 503 | `UpstreamUnavailable` |
+| `INTERNAL_ERROR` | 500 | any other exception: no internals in the body, stack trace and correlation id in the log |
+
+`RequestValidationError` gives 422 `VALIDATION_ERROR` with `errors: [{field, message}]` and never the input values. Starlette HTTP errors (unknown route, wrong method) give problem+json with `NOT_FOUND` or `METHOD_NOT_ALLOWED`.
+
+### Identity
+- **Users** (`app/security/`): `verify_jwt_token` checks HS256 with `JWT_SECRET_KEY`, requires `sub, email, jti, exp, iat, iss`, ALWAYS verifies the issuer (`JWT_ISSUER`, default `https://auth.granthan.com`) and allows 10 s leeway. `get_current_user` then checks Redis `blacklist:<jti>` (auth-service writes it on logout): Redis down lets GET/HEAD/OPTIONS through (warning logged) and refuses POST/PUT/PATCH/DELETE with 503 `UPSTREAM_UNAVAILABLE`. A `known_users.deleted_at` gives 401. `CurrentUser {id, email, roles, jti, staff_role}`; `staff_role` is `admin` if `"admin" in roles`, else `support`, else none (`billing_admin` alone is not staff here).
+- `require_staff(min_role)`: SUPPORT allows support and admin; ADMIN allows admin only; others get 403 `FORBIDDEN_ROLE`.
+- `require_org_role(action)`: reads `org_id` from the path, loads the caller's ACTIVE membership, runs `permission_rules.check`; not a member (never joined, left, removed) is 404 `NOT_FOUND`, never 403. Returns `OrgContext {org_id, user, role, membership_id}`. An `OwnRoleOnly` cell passes the dependency; the use case checks the target's role. Staff do not use it.
+- **Services:** `INTERNAL_SERVICE_TOKENS` (`name:token,...`) is parsed once at startup (empty names, empty tokens, duplicate names and shared tokens refuse to boot); `require_service()` compares the bearer with every token using `hmac.compare_digest` without returning early; a miss is 401 and writes nothing. billing's `ORG_SERVICE_TOKEN` must equal the `billing:` entry.
+- Nothing logs the Authorization header, a raw token or a jti.
+
+### Idempotency (`IdempotentRoute`, `services/idempotency_service.py`)
+Public and admin routers use `APIRouter(route_class=IdempotentRoute)`. Every POST needs `Idempotency-Key` (8-128 of `[A-Za-z0-9_-]`, else 422). Scope `(actor_id, route template, key)`; `request_hash` = sha256 of the canonical JSON body.
+1. **Reserve** `state='in_progress'`, `locked_until = now + 60 s`, in its own short transaction.
+2. **On conflict**, read the row: hash differs gives 422 `IDEMPOTENCY_MISMATCH`; `done` replays the stored status and body with `Idempotent-Replayed: true`; `in_progress` and locked gives 409 `IDEMPOTENCY_IN_PROGRESS` with `Retry-After`; lock passed (or the row is older than 24 h) is taken over atomically.
+3. **After the handler:** 2xx and 4xx are stored (`state='done'`); 5xx, an exception, 401 and 429 delete the reservation so the client can retry.
+TODO (Phase 4): a job that deletes `idempotency_keys` older than 24 h (until then old rows are ignored on read and taken over).
+
+### Rate limits (`middleware/rate_limit.py`, buckets in `app/core/constants.py`)
+Redis fixed windows (`rl:<bucket>:<who>:<window>`), `INCR` and `EXPIRE` in one pipeline; over the limit is 429 `RATE_LIMITED` with `Retry-After` (seconds to the window end). Redis down: `fail_closed` buckets answer 503, the others pass. Per-IP buckets use `X-Forwarded-For` only when the direct peer is in `FORWARDED_ALLOW_IPS` (right-most address that is not itself a trusted proxy).
+
+| Bucket | Limit | Key | Redis down |
+| --- | --- | --- | --- |
+| `invite_create` | 30 per minute | user | fail closed (503) |
+| `csv_upload` | 5 per hour | user | fail closed (503) |
+| `invite_preview` | 30 per minute | IP | pass |
+| `invite_accept` | 10 per minute | user | pass |
+
+### Audit (`services/audit_service.py`)
+`record(session, actor, action, target_type, target_id, details=None, reason=None, *, org_id=None, staff=False)` writes one `audit_log` row in the CALLER's session (never its own transaction, never commits). `actor_kind`: `user` (CurrentUser), `staff` (CurrentUser with `staff=True`, acting through an admin route), `service` (ServiceCaller; the name goes in `details.service`), `system`. `correlation_id` comes from the request ContextVar. `details` must be JSON-serialisable, at most 8 KB, and no key (at any depth) may contain `token`, `secret` or `password` (ValueError). Action names are constants in `app/core/constants.py`.
 
 ## 6. Rules (Phase 1, pure Python in `app/services/*_rules.py`)
 
