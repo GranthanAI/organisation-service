@@ -111,7 +111,7 @@ Every error is `application/problem+json`: `{type, title, status, code, detail, 
 ### Identity
 - **Users** (`app/security/`): `verify_jwt_token` checks HS256 with `JWT_SECRET_KEY`, requires `sub, email, jti, exp, iat, iss`, ALWAYS verifies the issuer (`JWT_ISSUER`, default `https://auth.granthan.com`) and allows 10 s leeway. `get_current_user` then checks Redis `blacklist:<jti>` (auth-service writes it on logout): Redis down lets GET/HEAD/OPTIONS through (warning logged) and refuses POST/PUT/PATCH/DELETE with 503 `UPSTREAM_UNAVAILABLE`. A `known_users.deleted_at` gives 401. `CurrentUser {id, email, roles, jti, staff_role}`; `staff_role` is `admin` if `"admin" in roles`, else `support`, else none (`billing_admin` alone is not staff here).
 - `require_staff(min_role)`: SUPPORT allows support and admin; ADMIN allows admin only; others get 403 `FORBIDDEN_ROLE`.
-- `require_org_role(action)`: reads `org_id` from the path, loads the caller's ACTIVE membership, runs `permission_rules.check`; not a member (never joined, left, removed) is 404 `NOT_FOUND`, never 403. Returns `OrgContext {org_id, user, role, membership_id}`. An `OwnRoleOnly` cell passes the dependency; the use case checks the target's role. Staff do not use it.
+- `require_org_role(action)`: reads `org_id` from the path, loads the caller's ACTIVE membership, runs `permission_rules.check`; not a member (never joined, left, removed) is 404 `NOT_FOUND`, never 403. Returns `OrgContext {org_id, user, role, membership_id}`. An `OwnRoleOnly` cell passes the dependency; the use case must call `ctx.check_target(target_role)` (`OrgContext.check_target` runs `permission_rules.check(action, role, target_role)`): Phases 5-6 call it for remove and role changes. Staff do not use it.
 - **Services:** `INTERNAL_SERVICE_TOKENS` (`name:token,...`) is parsed once at startup (empty names, empty tokens, duplicate names and shared tokens refuse to boot); `require_service()` compares the bearer with every token using `hmac.compare_digest` without returning early; a miss is 401 and writes nothing. billing's `ORG_SERVICE_TOKEN` must equal the `billing:` entry.
 - Nothing logs the Authorization header, a raw token or a jti.
 
@@ -119,8 +119,10 @@ Every error is `application/problem+json`: `{type, title, status, code, detail, 
 Public and admin routers use `APIRouter(route_class=IdempotentRoute)`. Every POST needs `Idempotency-Key` (8-128 of `[A-Za-z0-9_-]`, else 422). Scope `(actor_id, route template, key)`; `request_hash` = sha256 of the canonical JSON body.
 1. **Reserve** `state='in_progress'`, `locked_until = now + 60 s`, in its own short transaction.
 2. **On conflict**, read the row: hash differs gives 422 `IDEMPOTENCY_MISMATCH`; `done` replays the stored status and body with `Idempotent-Replayed: true`; `in_progress` and locked gives 409 `IDEMPOTENCY_IN_PROGRESS` with `Retry-After`; lock passed (or the row is older than 24 h) is taken over atomically.
-3. **After the handler:** 2xx and 4xx are stored (`state='done'`); 5xx, an exception, 401 and 429 delete the reservation so the client can retry.
-TODO (Phase 4): a job that deletes `idempotency_keys` older than 24 h (until then old rows are ignored on read and taken over).
+3. **After the handler:** only 2xx is stored (`state='done'`). Every 4xx and 5xx, and any exception, deletes the reservation so the client can retry (`IDEMPOTENCY_MISMATCH` and `IDEMPOTENCY_IN_PROGRESS` are answered before the handler and never stored).
+
+Before anything is reserved or replayed, the route class authenticates the caller with the same helper as `get_current_user` (`authenticate_user`: JWT, blacklisted jti, deleted user, Redis down on a write gives 503), so a revoked token or deleted user never reads a stored response.
+Cleanup: the `idempotency.cleanup` job (Phase 4, hourly) deletes rows older than 24 h; rows past 24 h are also ignored on read and taken over.
 
 ### Rate limits (`middleware/rate_limit.py`, buckets in `app/core/constants.py`)
 Redis fixed windows (`rl:<bucket>:<who>:<window>`), `INCR` and `EXPIRE` in one pipeline; over the limit is 429 `RATE_LIMITED` with `Retry-After` (seconds to the window end). Redis down: `fail_closed` buckets answer 503, the others pass. Per-IP buckets use `X-Forwarded-For` only when the direct peer is in `FORWARDED_ALLOW_IPS` (right-most address that is not itself a trusted proxy).

@@ -4,11 +4,13 @@ import asyncio
 import uuid
 from datetime import timedelta
 
+import fakeredis
 import pytest
 from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from app.api.deps import get_db_session, get_redis_client
 from app.api.idempotent_route import IdempotentRoute
 from app.core.clock import FixedClock
 from app.core.exceptions import (
@@ -18,8 +20,10 @@ from app.core.exceptions import (
     RateLimited,
     UpstreamUnavailable,
 )
+from app.db.session import unit_of_work
 from app.middleware.correlation import CorrelationIDMiddleware
 from app.middleware.exception_handler import register_exception_handlers
+from app.repositories.known_user_repository import KnownUserRepository
 from app.services.idempotency_service import IdempotencyService, request_hash, validate_key
 from tests.support.factories import NOW
 from tests.support.tokens import bearer, make_token
@@ -34,12 +38,20 @@ class Probe:
         self.release = asyncio.Event()
 
 
-def build(session_factory, clock):
+def build(session_factory, clock, redis=None):
     probe = Probe()
+    probe.redis = redis if redis is not None else fakeredis.FakeAsyncRedis()
     app = FastAPI()
     app.add_middleware(CorrelationIDMiddleware)
     register_exception_handlers(app)
     app.state.idempotency_service = IdempotencyService(session_factory, clock)
+
+    async def session():
+        async with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db_session] = session
+    app.dependency_overrides[get_redis_client] = lambda: probe.redis
     router = APIRouter(route_class=IdempotentRoute)
 
     @router.post("/t/create", status_code=201)
@@ -253,23 +265,31 @@ async def test_an_unexpected_exception_deletes_the_reservation(env):
     assert probe.calls == 2
 
 
-async def test_a_4xx_is_stored_and_replayed_as_problem_json(env):
+async def test_a_4xx_is_not_stored_the_reservation_is_released_and_a_retry_runs_again(env):
     client, probe, sf = env
     user = uuid.uuid4()
     first = await client.post("/t/conflict", json={}, headers=headers(user))
+    assert first.status_code == 409 and await rows(sf) == []
     second = await client.post("/t/conflict", json={}, headers=headers(user))
-    assert first.status_code == second.status_code == 409
-    assert second.headers["content-type"].startswith("application/problem+json")
-    assert second.json()["code"] == "ALREADY_IN_ORG" and second.headers["idempotent-replayed"] == "true"
-    assert probe.calls == 1 and [(r.state, r.status_code) for r in await rows(sf)] == [("done", 409)]
+    assert second.status_code == 409 and second.json()["code"] == "ALREADY_IN_ORG"
+    assert "idempotent-replayed" not in second.headers and probe.calls == 2
 
 
-async def test_a_validation_error_is_a_stored_4xx_too(env):
+async def test_only_2xx_is_stored(env):
+    client, probe, sf = env
+    user = uuid.uuid4()
+    ok = await client.post("/t/create", json={}, headers=headers(user))
+    assert ok.status_code == 201 and [(r.state, r.status_code) for r in await rows(sf)] == [("done", 201)]
+    for path in ("/t/conflict", "/t/unavailable", "/t/boom", "/t/limited"):
+        await client.post(path, json={}, headers=headers(user, key=f"key-{abs(hash(path)) % 10**8:08d}"))
+    assert [(r.state, r.status_code) for r in await rows(sf)] == [("done", 201)]   # nothing else was kept
+
+
+async def test_a_validation_error_is_not_stored_either(env):
     client, probe, sf = env
     user = uuid.uuid4()
     r = await client.post("/t/create", content=b"[1, 2]", headers={**headers(user), "content-type": "application/json"})
-    assert r.status_code == 422                    # body must be an object: FastAPI rejects before our handler
-    assert probe.calls == 0
+    assert r.status_code == 422 and probe.calls == 0 and await rows(sf) == []
 
 
 async def test_429_is_never_stored(env):
@@ -282,12 +302,59 @@ async def test_429_is_never_stored(env):
     assert probe.calls == 2
 
 
-async def test_without_a_valid_token_the_route_runs_untouched_and_nothing_is_stored(env):
+async def test_without_credentials_the_route_runs_untouched_and_nothing_is_stored(env):
     client, probe, sf = env
-    r = await client.post("/t/create", json={"a": 1}, headers={"Idempotency-Key": KEY})       # no bearer
-    r2 = await client.post("/t/create", json={"a": 1}, headers={"Idempotency-Key": KEY, "Authorization": "Bearer x"})
-    assert r.status_code == 201 and r2.status_code == 201      # the real routes' get_current_user answers 401 here
+    r = await client.post("/t/create", json={"a": 1}, headers={"Idempotency-Key": KEY})       # no bearer at all
+    assert r.status_code == 201      # the real routes' get_current_user answers 401 here
     assert await rows(sf) == []
+
+
+async def test_a_bad_token_gets_401_before_anything_is_reserved(env):
+    client, probe, sf = env
+    r = await client.post("/t/create", json={}, headers={"Idempotency-Key": KEY, "Authorization": "Bearer x"})
+    assert r.status_code == 401 and r.json()["code"] == "UNAUTHENTICATED"
+    assert probe.calls == 0 and await rows(sf) == []
+
+
+# --- J2: the identity checks run before a stored response is replayed ---
+async def test_a_blacklisted_token_gets_401_and_no_replay(env):
+    client, probe, sf = env
+    user = uuid.uuid4()
+    first = await client.post("/t/create", json={"a": 1}, headers=headers(user, jti="jti-one"))
+    assert first.status_code == 201
+    await probe.redis.set("blacklist:jti-one", "1", ex=60)               # the user logged out
+    r = await client.post("/t/create", json={"a": 1}, headers=headers(user, jti="jti-one"))
+    assert r.status_code == 401 and r.json()["code"] == "UNAUTHENTICATED"
+    assert "idempotent-replayed" not in r.headers and "n" not in r.json()   # the stored body is not returned
+    assert probe.calls == 1
+    # a fresh token of the same user still replays
+    again = await client.post("/t/create", json={"a": 1}, headers=headers(user, jti="jti-two"))
+    assert again.headers["idempotent-replayed"] == "true"
+
+
+async def test_a_deleted_user_gets_401_and_no_replay(env):
+    client, probe, sf = env
+    user = uuid.uuid4()
+    await client.post("/t/create", json={"a": 1}, headers=headers(user))
+    async with unit_of_work(sf) as db:
+        repo = KnownUserRepository(db)
+        await repo.upsert(user, "gone@amity.edu", "Gone", NOW)
+        await repo.set_deleted(user, NOW)
+    r = await client.post("/t/create", json={"a": 1}, headers=headers(user))
+    assert r.status_code == 401 and "idempotent-replayed" not in r.headers and "n" not in r.json()
+    assert probe.calls == 1
+
+
+async def test_redis_down_on_a_write_gives_503_not_a_replay(session_factory, clock):
+    class BrokenRedis:
+        async def exists(self, *_a, **_k):
+            raise ConnectionError("down")
+
+    app, probe = build(session_factory, clock, redis=BrokenRedis())
+    user = uuid.uuid4()
+    async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://t") as c:
+        r = await c.post("/t/create", json={}, headers=headers(user))
+    assert r.status_code == 503 and r.json()["code"] == "UPSTREAM_UNAVAILABLE" and probe.calls == 0
 
 
 async def test_get_requests_are_not_idempotency_keyed(env):
