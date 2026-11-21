@@ -58,3 +58,8 @@ class IdempotencyRepository:
     async def delete(self, actor_id: uuid.UUID, route: str, key: str) -> None:
         await self.session.execute(delete(IdempotencyKey).where(
             IdempotencyKey.actor_id == actor_id, IdempotencyKey.route == route, IdempotencyKey.key == key))
+
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        """Housekeeping: drop rows created before `cutoff` (the 24 h retention)."""
+        result = await self.session.execute(delete(IdempotencyKey).where(IdempotencyKey.created_at < cutoff))
+        return result.rowcount

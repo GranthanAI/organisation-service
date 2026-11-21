@@ -51,7 +51,7 @@ def empty_db():
 def test_upgrade_downgrade_upgrade(empty_db):
     testdb.upgrade(empty_db)
     assert tables(empty_db) == TABLES | {"alembic_version"}
-    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0005_plumbing_fixes"
+    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0006_outbox_correlation"
 
     testdb.downgrade(empty_db, "base")
     assert tables(empty_db) == {"alembic_version"}
@@ -181,3 +181,14 @@ def test_0005_downgrade_drops_reservations_and_upgrade_backfills_revoked_invites
                     "VALUES ('k2', gen_random_uuid(), 'r', 'h', 'done', 201, now()) RETURNING 1")
     testdb.downgrade(empty_db, "0004_grants")
     assert [r["key"] for r in fetch(empty_db, "SELECT key FROM idempotency_keys")] == ["k2"]
+
+
+def test_0006_adds_and_drops_the_outbox_correlation_column(empty_db):
+    testdb.upgrade(empty_db, "0005_plumbing_fixes")
+    assert "correlation_id" not in columns(empty_db, "outbox")
+    testdb.upgrade(empty_db)
+    assert columns(empty_db, "outbox")["correlation_id"] is True
+    testdb.downgrade(empty_db, "0005_plumbing_fixes")
+    assert "correlation_id" not in columns(empty_db, "outbox")
+    testdb.upgrade(empty_db)
+    assert columns(empty_db, "outbox")["correlation_id"] is True

@@ -1,10 +1,10 @@
-"""Persistence for the outbox. Rows are written in the same transaction as the change they describe. The publishing
-worker is Phase 4; `claim_due` is the query it will use. No business rules; never commits."""
+"""Persistence for the outbox. Rows are written in the same transaction as the change they describe; the relay
+(workers/outbox_worker.py) publishes them. No business rules; never commits."""
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.outbox import OutboxEvent
@@ -36,3 +36,25 @@ class OutboxRepository:
             .with_for_update(skip_locked=True)
         )
         return list((await self.session.execute(stmt)).scalars())
+
+    async def oldest_unpublished(self, limit: int = 100) -> list[OutboxEvent]:
+        """The oldest unpublished rows in publish order (created_at, id), locked FOR UPDATE. The relay publishes them
+        in this order and stops at the first row that is not due or fails, so it never skips ahead of a failed row."""
+        stmt = (
+            select(OutboxEvent)
+            .where(OutboxEvent.published_at.is_(None))
+            .order_by(OutboxEvent.created_at, OutboxEvent.id)
+            .limit(limit)
+            .with_for_update()
+        )
+        return list((await self.session.execute(stmt)).scalars())
+
+    async def stats(self, now: datetime) -> tuple[int, float]:
+        """(unpublished rows, age in seconds of the oldest one; 0 when none)."""
+        stmt = select(func.count(), func.min(OutboxEvent.created_at)).where(OutboxEvent.published_at.is_(None))
+        count, oldest = (await self.session.execute(stmt)).one()
+        return count, (max(0.0, (now - oldest).total_seconds()) if oldest else 0.0)
+
+    async def delete_published_before(self, cutoff: datetime) -> int:
+        result = await self.session.execute(delete(OutboxEvent).where(OutboxEvent.published_at < cutoff))
+        return result.rowcount
