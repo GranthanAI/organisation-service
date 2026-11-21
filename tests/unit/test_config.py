@@ -4,7 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import (
-    DEV_BILLING_TOKEN, DEV_DATABASE_URL, DEV_INTERNAL_TOKENS, DEV_JWT_SECRET, Settings,
+    DEV_BILLING_TOKEN,
+    DEV_DATABASE_URL,
+    DEV_INTERNAL_TOKENS,
+    DEV_JWT_SECRET,
+    Settings,
 )
 
 GOOD = dict(
