@@ -64,6 +64,7 @@ class ConsumerWorker:
         sleep: Sleep = asyncio.sleep,
         max_retries: int | None = None,
         dlq_topic: str | None = None,
+        topic_aliases: dict[str, str] | None = None,
     ) -> None:
         self._consumer = consumer
         self._producer = producer
@@ -72,6 +73,7 @@ class ConsumerWorker:
         self._sleep = sleep
         self._max_retries = settings.CONSUMER_MAX_RETRIES if max_retries is None else max_retries
         self._dlq_topic = dlq_topic or settings.KAFKA_DLQ_TOPIC
+        self._aliases = topic_aliases or {}   # real topic name -> logical one (tests use throwaway topics)
         self._stop = asyncio.Event()
 
     # ---- one message
@@ -98,10 +100,11 @@ class ConsumerWorker:
 
     async def _dispatch(self, msg: Any) -> None:
         body = json.loads(msg.value)   # undecodable bytes raise here: a schema-level error, no retries
-        if msg.topic == topics.USER_DELETED:
+        topic = self._aliases.get(msg.topic, msg.topic)
+        if topic == topics.USER_DELETED:
             await handlers.process_user_deleted(self._factory, UserDeletedEvent.model_validate(body), self._clock)
             return
-        if msg.topic != topics.USER_EVENTS:
+        if topic != topics.USER_EVENTS:
             raise ValueError(f"unexpected topic {msg.topic}")
         envelope = UserEventEnvelope.model_validate(body)
         if envelope.event_type == "UserRegistered":

@@ -12,6 +12,7 @@ from app.db.postgres import dispose_engine
 from app.middleware.correlation import CorrelationIDMiddleware
 from app.middleware.exception_handler import register_exception_handlers
 from app.security.service_tokens import load_service_tokens
+from app.workers.manager import WorkerManager
 
 
 @asynccontextmanager
@@ -19,9 +20,14 @@ async def lifespan(app: FastAPI):
     logger.info("starting", environment=settings.ENVIRONMENT, port=settings.SERVICE_PORT,
                 workers_enabled=settings.WORKERS_ENABLED)
     load_service_tokens()   # a malformed INTERNAL_SERVICE_TOKENS stops the service from booting
-    # Phase 4 starts the outbox worker, consumer worker and job runner here when WORKERS_ENABLED.
+    workers = None
+    if settings.WORKERS_ENABLED:   # outbox relay, consumer worker and job runner; a crash never takes the API down
+        workers = WorkerManager()
+        workers.start()
     yield
     logger.info("shutting down")
+    if workers is not None:
+        await workers.stop()       # signal stop, wait up to 10 s, then cancel
     await dispose_engine()
     await close_redis()
 
