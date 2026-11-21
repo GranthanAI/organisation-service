@@ -11,6 +11,9 @@ A, D, O = Permission.ALLOWED, Permission.DENIED, Permission.OWN_ROLE_ONLY
 # action: owner, admin, member, staff support, staff admin
 EXPECTED = {
     Action.VIEW_ORG:                   (A, A, A, A, A),
+    Action.VIEW_MEMBERS:               (A, A, D, A, A),
+    Action.VIEW_INVITES:               (A, A, D, A, A),
+    Action.MANAGE_JOIN_REQUESTS:       (A, A, D, D, A),
     Action.INVITE:                     (A, A, D, D, A),
     Action.REVOKE_INVITE:              (A, A, D, D, A),
     Action.CSV_UPLOAD:                 (A, A, D, D, A),
@@ -30,6 +33,9 @@ EXPECTED = {
     Action.STAFF_EXTEND_PILOT:         (D, D, D, D, A),
     Action.STAFF_MANUAL_DOMAIN_VERIFY: (D, D, D, D, A),
     Action.STAFF_SET_SEATS:            (D, D, D, D, A),
+    Action.STAFF_ADD_MEMBER:           (D, D, D, D, A),
+    Action.STAFF_REACTIVATE:           (D, D, D, D, A),
+    Action.STAFF_CLOSE_ORG:            (D, D, D, D, A),
 }
 ACTORS = [Role.OWNER, Role.ADMIN, Role.MEMBER, StaffRole.SUPPORT, StaffRole.ADMIN]
 
@@ -82,10 +88,22 @@ def test_owner_and_staff_admin_may_remove_any_role(target):
 def test_support_is_read_only():
     writes = [a for a in Action if permission_for(a, StaffRole.SUPPORT) is not A]
     reads = [a for a in Action if permission_for(a, StaffRole.SUPPORT) is A]
-    assert set(reads) == {Action.VIEW_ORG, Action.VIEW_USAGE, Action.VIEW_AUDIT}
+    assert set(reads) == {Action.VIEW_ORG, Action.VIEW_MEMBERS, Action.VIEW_INVITES, Action.VIEW_USAGE,
+                          Action.VIEW_AUDIT}
     assert Action.INVITE in writes
 
 
 def test_a_non_actor_is_rejected_loudly():
     with pytest.raises(TypeError):
         permission_for(Action.VIEW_ORG, "owner")  # type: ignore[arg-type]
+
+
+def test_owner_closes_own_org_but_only_staff_closes_any():
+    assert permission_for(Action.CLOSE_ORG, Role.OWNER) is A
+    assert permission_for(Action.STAFF_CLOSE_ORG, Role.OWNER) is D
+    assert permission_for(Action.STAFF_CLOSE_ORG, StaffRole.ADMIN) is A
+
+
+def test_members_cannot_see_the_member_or_invite_lists():
+    for action in (Action.VIEW_MEMBERS, Action.VIEW_INVITES, Action.MANAGE_JOIN_REQUESTS):
+        assert permission_for(action, Role.MEMBER) is D

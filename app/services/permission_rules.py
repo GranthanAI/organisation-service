@@ -13,6 +13,9 @@ from app.core.exceptions import ForbiddenRole
 
 class Action(str, Enum):
     VIEW_ORG = "view_org"
+    VIEW_MEMBERS = "view_members"
+    VIEW_INVITES = "view_invites"
+    MANAGE_JOIN_REQUESTS = "manage_join_requests"
     INVITE = "invite"
     REVOKE_INVITE = "revoke_invite"
     CSV_UPLOAD = "csv_upload"
@@ -32,6 +35,9 @@ class Action(str, Enum):
     STAFF_EXTEND_PILOT = "staff_extend_pilot"
     STAFF_MANUAL_DOMAIN_VERIFY = "staff_manual_domain_verify"
     STAFF_SET_SEATS = "staff_set_seats"
+    STAFF_ADD_MEMBER = "staff_add_member"
+    STAFF_REACTIVATE = "staff_reactivate"
+    STAFF_CLOSE_ORG = "staff_close_org"
 
 
 class Permission(str, Enum):
@@ -45,6 +51,9 @@ A, D, O = Permission.ALLOWED, Permission.DENIED, Permission.OWN_ROLE_ONLY
 # action: (owner, admin, member, staff support, staff admin)
 _MATRIX: dict[Action, tuple[Permission, Permission, Permission, Permission, Permission]] = {
     Action.VIEW_ORG:                   (A, A, A, A, A),
+    Action.VIEW_MEMBERS:               (A, A, D, A, A),
+    Action.VIEW_INVITES:               (A, A, D, A, A),
+    Action.MANAGE_JOIN_REQUESTS:       (A, A, D, D, A),
     Action.INVITE:                     (A, A, D, D, A),
     Action.REVOKE_INVITE:              (A, A, D, D, A),
     Action.CSV_UPLOAD:                 (A, A, D, D, A),
@@ -65,6 +74,10 @@ _MATRIX: dict[Action, tuple[Permission, Permission, Permission, Permission, Perm
     Action.STAFF_EXTEND_PILOT:         (D, D, D, D, A),
     Action.STAFF_MANUAL_DOMAIN_VERIFY: (D, D, D, D, A),
     Action.STAFF_SET_SEATS:            (D, D, D, D, A),
+    Action.STAFF_ADD_MEMBER:           (D, D, D, D, A),
+    Action.STAFF_REACTIVATE:           (D, D, D, D, A),
+    # CLOSE_ORG is the org owner closing their own organisation; this one is staff closing any organisation.
+    Action.STAFF_CLOSE_ORG:            (D, D, D, D, A),
 }
 
 ORG_TABLE: dict[tuple[Action, Role], Permission] = {}

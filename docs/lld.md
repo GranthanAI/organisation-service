@@ -92,7 +92,37 @@ Consumed: `user-events` (`UserRegistered`, `EmailVerified` inside `{event_type, 
 ## 6. Rules (Phase 1, pure Python in `app/services/*_rules.py`)
 
 - **Enums** (`app/core/enums.py`): `OrgType`, `OrgStatus`, `Role`, `MembershipStatus`, `JoinSource`, `InviteKind`, `StaffRole`.
-- **Permissions**: one `(Action, Role | StaffRole) -> Allowed | Denied | OwnRoleOnly` table; `check(action, actor)` raises `ForbiddenRole`. Admins remove members only, not other admins or the owner.
+- **Permissions**: one `(Action, Role | StaffRole) -> Allowed | Denied | OwnRoleOnly` table; `check(action, actor)` raises `ForbiddenRole`. Admins remove members only, not other admins or the owner. `OwnRoleOnly` = allowed only against a target whose role ranks below the actor's. The owner may leave (the last-owner rule, not this table, blocks it). `CLOSE_ORG` is the org owner closing their own org; `STAFF_CLOSE_ORG` is staff closing any org. The matrix (`services/permission_rules.py`, walked cell by cell in `tests/unit/test_permission_rules.py`):
+
+| Action | Owner | Admin | Member | Staff support | Staff admin |
+| --- | --- | --- | --- | --- | --- |
+| `view_org` | Yes | Yes | Yes | Yes | Yes |
+| `view_members` | Yes | Yes | - | Yes | Yes |
+| `view_invites` | Yes | Yes | - | Yes | Yes |
+| `manage_join_requests` | Yes | Yes | - | - | Yes |
+| `invite` | Yes | Yes | - | - | Yes |
+| `revoke_invite` | Yes | Yes | - | - | Yes |
+| `csv_upload` | Yes | Yes | - | - | Yes |
+| `manage_links` | Yes | Yes | - | - | Yes |
+| `remove_member` | Yes | Lower roles only | - | - | Yes |
+| `change_role` | Yes | - | - | - | Yes |
+| `transfer_ownership` | Yes | - | - | - | Yes |
+| `close_org` | Yes | - | - | - | Yes |
+| `edit_details` | Yes | Yes | - | - | Yes |
+| `manage_domains` | Yes | Yes | - | - | Yes |
+| `edit_policies` | Yes | Yes | - | - | Yes |
+| `view_usage` | Yes | Yes | - | Yes | Yes |
+| `view_audit` | Yes | Yes | - | Yes | Yes |
+| `leave` | Yes | Yes | Yes | - | - |
+| `staff_create_org` | - | - | - | - | Yes |
+| `staff_suspend` | - | - | - | - | Yes |
+| `staff_extend_pilot` | - | - | - | - | Yes |
+| `staff_manual_domain_verify` | - | - | - | - | Yes |
+| `staff_set_seats` | - | - | - | - | Yes |
+| `staff_add_member` | - | - | - | - | Yes |
+| `staff_reactivate` | - | - | - | - | Yes |
+| `staff_close_org` | - | - | - | - | Yes |
+
 - **Seats**: `can_join(org_status, seats_bought | None, active_count, is_pilot)`; `None` = no cap (PAYG); pilots capped at `PILOT_MAX_MEMBERS`. Owners and admins count (D3). No overage (D2).
 - **Lifecycle**: `pilot -> active|pilot_expired|suspended|closed`; `pilot_expired -> pilot|active|closed`; `active -> suspended|closed`; `suspended -> pilot|pilot_expired|active|closed`; `closed` final. `reactivation_target(was_pilot, pilot_ends_at, now)` picks `pilot` (pilot still running), `pilot_expired` (it ended) or `active`.
 - **Membership**: `check_can_end(role, active_owner_count, reason: EndReason)`: last-owner protection (`LastOwner`) applies to `left` and `removed` only; `user_deleted` and `org_closed` always pass and return `owner_missing=True` when the last owner goes (Phase 4 writes the `org.owner_missing` audit row); transfer target must be an active admin and the old owner becomes admin.
