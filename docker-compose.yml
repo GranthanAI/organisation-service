@@ -1,0 +1,21 @@
+# This service only. Shared infra (Postgres, Redis, Kafka) stays in ../docker-compose.yml (network graphgpt-net).
+# Inside the network the infra hosts are the container names, so the URLs below differ from the host-run defaults.
+services:
+  organisation-service:
+    build: .
+    container_name: organisation-service
+    ports:
+      - "127.0.0.1:8010:8010"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql+asyncpg://postgres:1234@graphgpt-postgres:5432/organisation_service_db}
+      REDIS_URL: ${DOCKER_REDIS_URL:-redis://graphgpt-redis:6379/0}
+      KAFKA_BOOTSTRAP_SERVERS: ${DOCKER_KAFKA_BOOTSTRAP_SERVERS:-graphgpt-kafka:9092}
+    networks:
+      - graphgpt-net
+
+networks:
+  graphgpt-net:
+    external: true
+    name: graphgpt-net
