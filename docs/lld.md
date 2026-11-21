@@ -94,7 +94,7 @@ Consumed: `user-events` (`UserRegistered`, `EmailVerified` inside `{event_type, 
 - **Enums** (`app/core/enums.py`): `OrgType`, `OrgStatus`, `Role`, `MembershipStatus`, `JoinSource`, `InviteKind`, `StaffRole`.
 - **Permissions**: one `(Action, Role | StaffRole) -> Allowed | Denied | OwnRoleOnly` table; `check(action, actor)` raises `ForbiddenRole`. Admins remove members only, not other admins or the owner.
 - **Seats**: `can_join(org_status, seats_bought | None, active_count, is_pilot)`; `None` = no cap (PAYG); pilots capped at `PILOT_MAX_MEMBERS`. Owners and admins count (D3). No overage (D2).
-- **Lifecycle**: `pilot -> active|pilot_expired|suspended|closed`; `pilot_expired -> active|closed`; `active -> suspended|closed`; `suspended -> active|closed`; `closed` final.
+- **Lifecycle**: `pilot -> active|pilot_expired|suspended|closed`; `pilot_expired -> pilot|active|closed`; `active -> suspended|closed`; `suspended -> pilot|pilot_expired|active|closed`; `closed` final. `reactivation_target(was_pilot, pilot_ends_at, now)` picks `pilot` (pilot still running), `pilot_expired` (it ended) or `active`.
 - **Membership**: last-owner protection; transfer target must be an active admin and the old owner becomes admin.
 - **Layering** (`tests/unit/test_layering.py`): `*_rules.py` import only stdlib and `app/core`; `api/` never imports `models/` or `repositories/`; `repositories/` never import `api/`.
 

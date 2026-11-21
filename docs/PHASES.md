@@ -278,11 +278,12 @@ billing's `plans.yaml` has no feature flags yet. Until it does, `app/core/plan_f
   | From | To |
   | --- | --- |
   | `pilot` | `active`, `pilot_expired`, `suspended`, `closed` |
-  | `pilot_expired` | `active`, `closed` |
+  | `pilot_expired` | `pilot` (extend an expired pilot), `active`, `closed` |
   | `active` | `suspended`, `closed` |
-  | `suspended` | `active`, `closed` |
+  | `suspended` | `pilot` (reactivate a suspended pilot), `pilot_expired` (its pilot ended while suspended), `active`, `closed` |
 
   `closed` is final. Any other transition raises `IllegalTransition`.
+  Pure helper `reactivation_target(was_pilot, pilot_ends_at, now) -> OrgStatus`: `pilot` if `was_pilot` and `pilot_ends_at > now`, `pilot_expired` if `was_pilot` and it ended, else `active`.
 - **P1e: Membership.** `services/membership_rules.py`:
   - last-owner protection: `LastOwner` when an action would leave zero active owners;
   - role change rules;
