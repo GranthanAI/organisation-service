@@ -44,7 +44,7 @@ Public routes verify the Bearer JWT (HS256, `JWT_SECRET_KEY`; claims `sub, email
 
 | Group | Route | Phase |
 | --- | --- | --- |
-| root | `GET /live`, `GET /ready` (Postgres, Redis, Kafka; 503 names the failed dependency), `GET /metrics` | **P0 built** |
+| root | `GET /live`, `GET /ready` (probes Postgres, Redis, Kafka with a timeout; 503 only if Postgres is down, 200 `DEGRADED` if Redis or Kafka is down; body `{status, required, failed, details}`), `GET /metrics` | **P0 built** |
 | internal | `GET /internal/memberships/{user_id}` and alias `GET /internal/users/{user_id}/membership` -> `{org_id, org_type, role, status}` or 404 | P5 |
 | internal | `GET /internal/orgs/{org_id}` -> `{org_id, name, type, gstin, billing_email, state_code, member_spend_cap_paise}` | P5 |
 | internal | `GET /internal/orgs/{org_id}/members` -> `{user_ids}` (active only, max 10,000, else 422) | P5 |

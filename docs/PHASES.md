@@ -216,7 +216,7 @@ billing's `plans.yaml` has no feature flags yet. Until it does, `app/core/plan_f
   - `app/core/clock.py`.
 - **P0c: The app.**
   - `app/main.py` with lifespan and routers.
-  - `GET /live` (process up) and `GET /ready` (Postgres, Redis and Kafka reachable; per-dependency status in the body).
+  - `GET /live` (process up) and `GET /ready`. Postgres, Redis and Kafka are each probed with a timeout (`READY_PROBE_TIMEOUT_SECONDS`) and reported in `details`. Only Postgres is required: it down gives 503; Redis or Kafka down gives 200 with `"status": "DEGRADED"`. Body: `{status: UP|DEGRADED|DOWN, required: ["postgres"], failed: [...], details: {...}}`.
   - `GET /metrics`.
   - Correlation middleware: accept `X-Correlation-ID`, or generate one, and echo it back.
 - **P0d: Build and run.**
@@ -245,9 +245,9 @@ billing's `plans.yaml` has no feature flags yet. Until it does, `app/core/plan_f
 
 **Tests:**
 - `tests/unit/test_config.py`: the production guard rejects each dev default.
-- `tests/api/test_health.py`: `/live` returns 200; `/ready` returns 503 with the failing dependency named, using fake clients.
+- `tests/api/test_health.py`: `/live` returns 200; `/ready` returns 503 when Postgres is down and 200 `DEGRADED` when only Redis or Kafka is down, and a hanging probe is cut at the timeout, using fake probes.
 
-**Exit check:** `make setup && make db-create && make dev` boots on 8010, `/live` returns 200, `/ready` returns 200 with the shared infra up, and the two test files pass.
+**Exit check:** `make setup && make db-create && make dev` boots on 8010, `/live` returns 200, `/ready` returns 200 with the shared infra up (503 only when Postgres is down), and the two test files pass.
 
 ---
 

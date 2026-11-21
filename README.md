@@ -15,7 +15,7 @@ make db-create     # create organisation_service_db (safe to run twice)
 make dev           # http://127.0.0.1:8010
 ```
 
-Check: `GET /live` (process up), `GET /ready` (Postgres, Redis, Kafka; 503 names the one that is down), `GET /metrics`. `X-Correlation-ID` is accepted or generated and echoed back.
+Check: `GET /live` (process up), `GET /ready` (Postgres, Redis, Kafka; 503 only if Postgres is down, 200 `DEGRADED` if Redis or Kafka is), `GET /metrics`. `X-Correlation-ID` is accepted or generated and echoed back.
 
 Tests, one file at a time (the owner runs the full suite):
 
