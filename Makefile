@@ -1,5 +1,5 @@
 # Windows without make: run the commands by hand, e.g.  .venv\Scripts\python -m pytest tests\unit\test_config.py -q
-.PHONY: help setup infra-up infra-down db-create db-migrate dev test lint clean
+.PHONY: help setup infra-up infra-down db-create db-migrate topics dev test lint clean
 
 help:
 	@echo "organisation-service (port 8010)"
@@ -8,6 +8,7 @@ help:
 	@echo "  make infra-down           - stop the shared dev infra"
 	@echo "  make db-create            - create organisation_service_db in the shared Postgres (idempotent)"
 	@echo "  make db-migrate           - apply Alembic migrations (none until Phase 2)"
+	@echo "  make topics               - create the Kafka topics this service produces (safe to run twice)"
 	@echo "  make dev                  - run the API on 127.0.0.1:8010 with reload"
 	@echo "  make test FILE=tests/unit/test_config.py - run ONE test file"
 	@echo "  make lint                 - ruff check"
@@ -28,6 +29,9 @@ db-create:
 
 db-migrate:
 	uv run alembic upgrade head
+
+topics:
+	uv run python -m scripts.create_topics
 
 dev:
 	uv run uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload --proxy-headers --forwarded-allow-ips "$${FORWARDED_ALLOW_IPS:-127.0.0.1}"

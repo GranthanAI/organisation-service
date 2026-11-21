@@ -13,6 +13,7 @@ make infra-up      # shared Postgres, Redis, Kafka (once)
 make setup         # copy .env.example to .env, uv sync
 make db-create     # create organisation_service_db (safe to run twice)
 make db-migrate    # Alembic upgrade to head (Phase 2 schema)
+make topics        # create the Kafka topics this service produces and its DLQ (safe to run twice)
 make dev           # http://127.0.0.1:8010
 ```
 
