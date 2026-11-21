@@ -7,12 +7,13 @@ import re
 
 from sqlalchemy.exc import IntegrityError
 
-from app.core.exceptions import AlreadyInOrg, DomainError, DomainTaken, InviteAlreadyOpen
+from app.core.exceptions import AlreadyInOrg, DomainError, DomainTaken, InviteAlreadyOpen, JoinRequestPending
 
 CONSTRAINT_ERRORS: dict[str, type[DomainError]] = {
     "ux_memberships_one_active_org": AlreadyInOrg,
     "ux_invites_open_email": InviteAlreadyOpen,
     "ux_org_domains_verified": DomainTaken,
+    "ux_join_requests_pending": JoinRequestPending,
 }
 
 _NAME_IN_MESSAGE = re.compile(r'constraint "([^"]+)"|index "([^"]+)"')

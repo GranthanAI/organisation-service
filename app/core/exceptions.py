@@ -47,6 +47,10 @@ class DomainTaken(DomainError):
     code = "DOMAIN_TAKEN"
 
 
+class JoinRequestPending(DomainError):
+    code = "JOIN_REQUEST_PENDING"
+
+
 class SeatsFull(DomainError):
     code = "SEATS_FULL"
 
