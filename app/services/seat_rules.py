@@ -5,19 +5,10 @@ Every active membership is a seat, owners and admins included (D3). No overage: 
 from settings.PILOT_MAX_MEMBERS (this file reads no configuration).
 """
 
-from enum import Enum
-
-from app.core.enums import OrgStatus
+from app.core.enums import JoinDecision, OrgStatus
 
 # Only these states accept new members; pilot_expired, suspended and closed do not.
 JOINABLE = frozenset({OrgStatus.PILOT, OrgStatus.ACTIVE})
-
-
-class JoinDecision(str, Enum):
-    OK = "ok"
-    SEATS_FULL = "seats_full"
-    PILOT_FULL = "pilot_full"
-    ORG_INACTIVE = "org_inactive"
 
 
 def can_join(

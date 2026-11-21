@@ -60,3 +60,12 @@ class StaffRole(str, Enum):
 
     SUPPORT = "support"
     ADMIN = "admin"
+
+
+class JoinDecision(str, Enum):
+    """Result of seat_rules.can_join."""
+
+    OK = "ok"
+    SEATS_FULL = "seats_full"
+    PILOT_FULL = "pilot_full"
+    ORG_INACTIVE = "org_inactive"
