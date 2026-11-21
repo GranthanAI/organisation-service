@@ -1,0 +1,73 @@
+"""Persistence for invites and CSV batches. No business rules; never commits."""
+
+import uuid
+from datetime import datetime
+
+from sqlalchemy import func, select, tuple_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.invite import Invite, InviteBatch
+
+
+class InviteRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def add(self, invite: Invite) -> Invite:
+        """Flushes at once, so ux_invites_open_email fails here."""
+        self.session.add(invite)
+        await self.session.flush()
+        return invite
+
+    async def save(self, invite: Invite) -> Invite:
+        await self.session.flush()
+        return invite
+
+    async def get(self, invite_id: uuid.UUID) -> Invite | None:
+        return await self.session.get(Invite, invite_id)
+
+    async def get_by_token_hash(self, token_hash: str) -> Invite | None:
+        stmt = select(Invite).where(Invite.token_hash == token_hash)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_by_token_hash_for_update(self, token_hash: str) -> Invite | None:
+        stmt = select(Invite).where(Invite.token_hash == token_hash).with_for_update()
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_open_for_email(self, org_id: uuid.UUID, email: str) -> Invite | None:
+        stmt = select(Invite).where(
+            Invite.org_id == org_id, Invite.email == email, Invite.kind != "link",
+            Invite.accepted_at.is_(None), Invite.revoked_at.is_(None))
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def list_page(
+        self,
+        org_id: uuid.UUID,
+        kind: str | None = None,
+        after: tuple[datetime, uuid.UUID] | None = None,
+        limit: int = 50,
+    ) -> list[Invite]:
+        """Newest first, keyset on (created_at, id)."""
+        stmt = select(Invite).where(Invite.org_id == org_id)
+        if kind:
+            stmt = stmt.where(Invite.kind == kind)
+        if after:
+            stmt = stmt.where(tuple_(Invite.created_at, Invite.id) < tuple_(*after))
+        stmt = stmt.order_by(Invite.created_at.desc(), Invite.id.desc()).limit(limit)
+        return list((await self.session.execute(stmt)).scalars())
+
+    async def count_created_since(self, org_id: uuid.UUID, since: datetime) -> int:
+        stmt = select(func.count()).select_from(Invite).where(Invite.org_id == org_id, Invite.created_at >= since)
+        return (await self.session.execute(stmt)).scalar_one()
+
+    async def add_batch(self, batch: InviteBatch) -> InviteBatch:
+        self.session.add(batch)
+        await self.session.flush()
+        return batch
+
+    async def get_batch(self, batch_id: uuid.UUID) -> InviteBatch | None:
+        return await self.session.get(InviteBatch, batch_id)
+
+    async def save_batch(self, batch: InviteBatch) -> InviteBatch:
+        await self.session.flush()
+        return batch
