@@ -12,6 +12,7 @@ Needs Python >= 3.12, [uv](https://docs.astral.sh/uv/), `make`, and the shared d
 make infra-up      # shared Postgres, Redis, Kafka (once)
 make setup         # copy .env.example to .env, uv sync
 make db-create     # create organisation_service_db (safe to run twice)
+make db-migrate    # Alembic upgrade to head (Phase 2 schema)
 make dev           # http://127.0.0.1:8010
 ```
 

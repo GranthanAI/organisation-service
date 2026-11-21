@@ -8,35 +8,41 @@ Status of each part: **P0-P1 built**; everything else is planned (phase in brack
 Owns organisations, memberships and roles, invites (email, CSV, link, domain), seat enforcement, org policies and the admin audit log.
 Does not own prices, subscriptions, invoices, wallets (billing-service), login or email verification (auth-service), or conversations (conversation-service, file-service). Org admins never see members' conversations.
 
-## 2. Tables (Postgres `organisation_service_db`, Alembic only) [P2]
+## 2. Tables (Postgres `organisation_service_db`, Alembic only) [P2: built, migrations 0001-0004]
 
-Times are `timestamptz` (UTC); emails are `citext`, stored lower-cased and trimmed; ids are UUIDv7; money is `int` paise.
+Hand-written migrations (`app/db/migrations/versions/`), each with a `downgrade()`; `make db-migrate` goes to head. Times are `timestamptz` (UTC, set from the Clock, no DB defaults); ids are UUIDv7 generated in Python (no DB uuid defaults); emails are `citext` (extension created in 0001); money is `int` paise. Enum columns are `text` with CHECK constraints whose values come from `app/core/enums.py` (no Postgres ENUM types). Models in `app/models/` mirror the columns (`tests/postgres/test_migrations.py` compares them).
 
 ### 0001_core
-| Table | Columns and rules |
-| --- | --- |
-| `organisations` | `id`, `name`, `slug` (unique), `type`, `legal_name`, `gstin`, `state_code` (char 2), `billing_email`, `status`, `pilot_ends_at`, `created_by`, `created_at`, `updated_at`, `closed_at` |
-| `memberships` | `id`, `org_id` FK, `user_id`, `role`, `status`, `source`, `invited_by`, `joined_at`, `ended_at`, `end_reason`. Partial unique index `ux_memberships_one_active_org` on `(user_id) WHERE status='active'` (D1). Index `(org_id, status)` |
-| `seat_state` | `org_id` PK FK, `plan_code` (`pilot`\|`org_pro`\|`org_max`\|`payg`), `variant` (`college`\|`company`), `seats_bought` (null = no cap), `status`, `period_end`, `source` (`staff`\|`billing`), `source_ref`, `refreshed_at`. Row locked `FOR UPDATE` on every join |
-| `known_users` | `user_id` PK, `email`, `full_name`, `email_verified_at`, `deleted_at`, `updated_at`. Index on `email` |
-| `audit_log` | `id`, `org_id`, `actor_id`, `actor_kind` (`user`\|`staff`\|`service`\|`system`), `action`, `target_type`, `target_id`, `details` jsonb, `reason`, `correlation_id`, `at`. Insert-only: trigger `forbid_change()` raises on UPDATE/DELETE |
-| `outbox` | `id`, `topic`, `key`, `payload` jsonb, `created_at`, `attempts`, `next_attempt_at`, `published_at`, `last_error`. Index on unpublished rows |
-| `processed_events` | `consumer`, `event_id`, `processed_at`; PK `(consumer, event_id)` |
-| `idempotency_keys` | `key`, `actor_id`, `route`, `request_hash`, `status_code`, `response` jsonb, `created_at`; PK `(actor_id, route, key)`; kept 24 h |
-| `jobs` | `id`, `kind`, `payload`, `run_at`, `attempts`, `locked_until`, `last_error`, `done_at` |
+| Table | Columns | Constraints and indexes |
+| --- | --- | --- |
+| `organisations` | `id` PK, `name`, `slug`, `type`, `legal_name`, `gstin`, `state_code` char(2), `billing_email` citext, `status`, `pilot_ends_at`, `created_by`, `created_at`, `updated_at`, `closed_at` | `uq_organisations_slug`; CHECK type in (college, company); CHECK status in (pilot, active, pilot_expired, suspended, closed); CHECK state_code is two digits; `ix_organisations_status` |
+| `memberships` | `id` PK, `org_id` FK, `user_id`, `role`, `status`, `source`, `invited_by`, `joined_at`, `ended_at`, `end_reason` | CHECKs for role, status, source and `end_reason` (left, removed, user_deleted, org_closed); `ck_memberships_ended`: active rows have no `ended_at`/`end_reason`, ended rows have both. **`ux_memberships_one_active_org`** unique `(user_id) WHERE status='active'` (D1); `ix_memberships_org_status (org_id, status)`; `ix_memberships_active_owners (org_id) WHERE status='active' AND role='owner'`; `ix_memberships_active_page (org_id, joined_at, id) WHERE status='active'` |
+| `seat_state` | `org_id` PK FK, `plan_code`, `variant`, `seats_bought`, `status`, `period_end`, `source`, `source_ref`, `refreshed_at` | one row per org (created with the org in Phase 5); CHECK plan_code in (pilot, org_pro, org_max, payg); CHECK variant; CHECK source in (staff, billing); `ck_seat_state_seats_bought`: NULL (no cap) or >= 1. The row locked `FOR UPDATE` on every join |
+| `known_users` | `user_id` PK, `email` citext, `full_name`, `email_verified_at`, `deleted_at`, `updated_at` | `ix_known_users_email` |
+| `audit_log` | `id` PK, `org_id`, `actor_id`, `actor_kind`, `action`, `target_type`, `target_id` text, `details` jsonb, `reason`, `correlation_id`, `at` | CHECK actor_kind in (user, staff, service, system); no FK on `org_id` (the log outlives anything); `ix_audit_log_org_at (org_id, at DESC, id DESC)`; `ix_audit_log_org_action`. **Insert-only:** trigger `audit_log_insert_only` (BEFORE UPDATE OR DELETE, FOR EACH ROW) runs `forbid_change()`, which raises `restrict_violation` (23001). TRUNCATE is not guarded |
+| `outbox` | `id` PK, `topic`, `key`, `payload` jsonb, `created_at`, `attempts` (0), `next_attempt_at`, `published_at`, `last_error` | `ix_outbox_unpublished (next_attempt_at) WHERE published_at IS NULL` |
+| `processed_events` | `consumer`, `event_id` text, `processed_at` | PK `(consumer, event_id)`; `ix_processed_events_processed_at` (cleanup) |
+| `idempotency_keys` | `key`, `actor_id`, `route`, `request_hash`, `status_code`, `response` jsonb, `created_at` | PK `(actor_id, route, key)`; `ix_idempotency_keys_created_at`; kept 24 h |
+| `jobs` | `id` PK, `kind`, `payload` jsonb, `run_at`, `attempts` (0), `locked_until`, `last_error`, `done_at`, `dedupe_key` | `ix_jobs_due (run_at) WHERE done_at IS NULL`; `ux_jobs_open_dedupe (dedupe_key) WHERE dedupe_key IS NOT NULL AND done_at IS NULL` (a recurring job is never queued twice) |
 
 ### 0002_invites
-| Table | Columns and rules |
-| --- | --- |
-| `invites` | `id`, `org_id`, `kind`, `email` (null for links), `role`, `token_hash` (unique), `max_uses`, `uses`, `batch_id`, `domain_restricted`, `expires_at`, `accepted_at`, `accepted_by`, `revoked_at`, `created_by`, `created_at`. Partial unique `(org_id, email) WHERE kind <> 'link' AND accepted_at IS NULL AND revoked_at IS NULL` |
-| `invite_batches` | `id`, `org_id`, `uploaded_by`, `filename`, `rows_total`, `rows_ok`, `rows_failed`, `status` (`validating`\|`queued`\|`sending`\|`done`\|`failed`), `errors` jsonb (max 5,000 rows), `created_at`, `finished_at` |
+| Table | Columns | Constraints and indexes |
+| --- | --- | --- |
+| `invite_batches` | `id` PK, `org_id` FK, `uploaded_by`, `filename`, `rows_total`, `rows_ok`, `rows_failed`, `status`, `errors` jsonb, `created_at`, `finished_at` | CHECK status in (validating, queued, sending, done, failed); CHECK `errors` is an array of at most 5,000 items; `ix_invite_batches_org` |
+| `invites` | `id` PK, `org_id` FK, `kind`, `email` citext, `role`, `token_hash`, `max_uses`, `uses` (0), `batch_id` FK, `domain_restricted` (false), `expires_at`, `accepted_at`, `accepted_by`, `revoked_at`, `created_by`, `created_at` | `uq_invites_token_hash`; CHECK kind in (email, csv, link); CHECK role; links have no email (`kind <> 'link' OR email IS NULL`; the 90-day purge also nulls it); `max_uses` NULL or >= 1; `uses >= 0`. **`ux_invites_open_email`** unique `(org_id, email) WHERE kind <> 'link' AND accepted_at IS NULL AND revoked_at IS NULL`; `ix_invites_org_created`, `ix_invites_batch`, `ix_invites_email` |
 
 ### 0003_domains_policies
-| Table | Columns and rules |
-| --- | --- |
-| `org_domains` | `org_id`, `domain`, `verify_token`, `verified_at`, `verified_by`, `verify_method` (`dns`\|`staff`), `auto_join`. Partial unique `(domain) WHERE verified_at IS NOT NULL` |
-| `join_requests` | `id`, `org_id`, `user_id`, `domain`, `status` (`pending`\|`approved`\|`declined`\|`expired`), `created_at`, `decided_by`, `decided_at` |
-| `org_policies` | `org_id` PK, `lock_modes`, `approved_mode_ids` uuid[], `member_spend_cap_paise` (null = none), `version`, `updated_by`, `updated_at` |
+| Table | Columns | Constraints and indexes |
+| --- | --- | --- |
+| `org_domains` | `org_id` FK, `domain`, `verify_token`, `verified_at`, `verified_by`, `verify_method`, `auto_join` (false) | PK `(org_id, domain)`; domain is lower-case; CHECK verify_method in (dns, staff); `verified_at` and `verify_method` are both set or both NULL. **`ux_org_domains_verified`** unique `(domain) WHERE verified_at IS NOT NULL` |
+| `join_requests` | `id` PK, `org_id` FK, `user_id`, `domain`, `status`, `created_at`, `decided_by`, `decided_at` | CHECK status in (pending, approved, declined, expired); `ix_join_requests_org_status` |
+| `org_policies` | `org_id` PK FK, `lock_modes` bool, `approved_mode_ids` uuid[], `member_spend_cap_paise` bigint, `version` (1), `updated_by`, `updated_at` | spend cap NULL (none) or >= 0; `version >= 1` |
+
+### 0004_grants
+If a role `org_app` exists: `SELECT, INSERT, UPDATE, DELETE` on every table except `audit_log` (`SELECT, INSERT` only). Skipped silently when the role does not exist (dev uses `postgres`); the trigger is the guard either way.
+
+### Data access
+`app/db/session.py`: `unit_of_work()` yields one session in one transaction (commit on success, rollback on any exception, so outbox and audit rows roll back with the change). `app/db/errors.py` maps `ux_memberships_one_active_org` to `AlreadyInOrg`, `ux_invites_open_email` to `InviteAlreadyOpen`, `ux_org_domains_verified` to `DomainTaken`; other violations are re-raised unchanged. Repositories (`app/repositories/`) take the session, never commit, and hold no business rules; `AuditRepository` has no update or delete method. `MembershipRepository.list_page` is keyset-paged on `(joined_at, id)`.
 
 ## 3. Routes
 
