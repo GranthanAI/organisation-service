@@ -4,11 +4,13 @@ import uuid
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.known_user import KnownUser
+
+PLACEHOLDER_DOMAIN = "deleted.invalid"
 
 
 class KnownUserRepository:
@@ -38,12 +40,30 @@ class KnownUserRepository:
         )
         await self.session.execute(stmt)
 
-    async def set_email_verified(self, user_id: uuid.UUID, email: str, verified_at: datetime) -> None:
-        stmt = insert(KnownUser).values(user_id=user_id, email=email, email_verified_at=verified_at,
-                                        updated_at=verified_at)
+    async def set_email_verified(self, user_id: uuid.UUID, email: str, verified_at: datetime,
+                                 now: datetime | None = None) -> None:
+        """Record that the email is verified. Keeps the EARLIEST verification time (LEAST ignores NULL), updates the
+        email, and creates the row if the user is not known yet."""
+        now = now or verified_at
+        stmt = insert(KnownUser).values(user_id=user_id, email=email, email_verified_at=verified_at, updated_at=now)
         stmt = stmt.on_conflict_do_update(
             index_elements=[KnownUser.user_id],
-            set_={"email": stmt.excluded.email, "email_verified_at": verified_at, "updated_at": verified_at},
+            set_={
+                "email": stmt.excluded.email,
+                "email_verified_at": func.least(KnownUser.email_verified_at, stmt.excluded.email_verified_at),
+                "updated_at": now,
+            },
+        )
+        await self.session.execute(stmt)
+
+    async def mark_deleted(self, user_id: uuid.UUID, now: datetime) -> None:
+        """Set deleted_at (keeping the first time), creating the row if the user was never seen. A created row has
+        a placeholder `<id>@deleted.invalid` email, because user.deleted carries none."""
+        stmt = insert(KnownUser).values(user_id=user_id, email=f"{user_id}@{PLACEHOLDER_DOMAIN}", deleted_at=now,
+                                        updated_at=now)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[KnownUser.user_id],
+            set_={"deleted_at": func.coalesce(KnownUser.deleted_at, stmt.excluded.deleted_at), "updated_at": now},
         )
         await self.session.execute(stmt)
 

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invite import Invite, InviteBatch
@@ -71,3 +71,13 @@ class InviteRepository:
     async def save_batch(self, batch: InviteBatch) -> InviteBatch:
         await self.session.flush()
         return batch
+
+    async def revoke_open_for_email(self, email: str, now: datetime, reason: str) -> int:
+        """Close every open (not accepted, not revoked) email or CSV invite to `email`, in every organisation."""
+        stmt = (
+            update(Invite)
+            .where(Invite.email == email, Invite.kind != "link", Invite.accepted_at.is_(None),
+                   Invite.revoked_at.is_(None))
+            .values(revoked_at=now, revoke_reason=reason)
+        )
+        return (await self.session.execute(stmt)).rowcount

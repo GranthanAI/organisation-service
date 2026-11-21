@@ -61,9 +61,10 @@ class FakeConsumer:
     async def stop(self) -> None:
         self.stopped = True
 
-    async def getone(self) -> FakeMessage:
-        while not self._queue:
-            await asyncio.sleep(0.01)
+    async def next_message(self, timeout: float) -> FakeMessage | None:
+        if not self._queue:
+            await asyncio.sleep(min(timeout, 0.02))
+            return None
         return self._queue.pop(0)
 
     async def commit_message(self, msg: FakeMessage) -> None:
