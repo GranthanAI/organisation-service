@@ -5,6 +5,7 @@ Business routes arrive in later phases; admin is added in Phase 5.
 
 from fastapi import APIRouter, Depends
 
+from app.api.admin import orgs as admin_orgs
 from app.api.internal import memberships, orgs, ping
 from app.api.internal.timing import time_request
 from app.api.v1 import health
@@ -24,3 +25,8 @@ internal_router.include_router(ping.router)
 internal_router.include_router(memberships.router)
 internal_router.include_router(orgs.router)
 api_router.include_router(internal_router)
+
+# Staff routes, reached through api-gateway as /admin/org/v1/*: GranthanAI staff only.
+admin_router = APIRouter(prefix="/admin/org/v1")
+admin_router.include_router(admin_orgs.router)
+api_router.include_router(admin_router)

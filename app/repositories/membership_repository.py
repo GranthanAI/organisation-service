@@ -49,9 +49,12 @@ class MembershipRepository:
             Membership.org_id == org_id, Membership.user_id == user_id, Membership.status == ACTIVE)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
-    async def list_active_for_org(self, org_id: uuid.UUID) -> list[Membership]:
+    async def list_active_for_org(self, org_id: uuid.UUID, limit: int | None = None) -> list[Membership]:
         stmt = select(Membership).where(Membership.org_id == org_id, Membership.status == ACTIVE)
-        return list((await self.session.execute(stmt.order_by(Membership.joined_at, Membership.id))).scalars())
+        stmt = stmt.order_by(Membership.joined_at, Membership.id)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return list((await self.session.execute(stmt)).scalars())
 
     async def list_active_user_ids(self, org_id: uuid.UUID, limit: int | None = None) -> list[uuid.UUID]:
         stmt = select(Membership.user_id).where(Membership.org_id == org_id, Membership.status == ACTIVE)

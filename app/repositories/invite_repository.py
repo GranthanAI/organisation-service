@@ -81,3 +81,12 @@ class InviteRepository:
             .values(revoked_at=now, revoke_reason=reason)
         )
         return (await self.session.execute(stmt)).rowcount
+
+    async def revoke_open_for_org(self, org_id: uuid.UUID, now: datetime, reason: str) -> int:
+        """Close every open invite of an organisation (email, CSV and link), e.g. when it is closed."""
+        stmt = (
+            update(Invite)
+            .where(Invite.org_id == org_id, Invite.accepted_at.is_(None), Invite.revoked_at.is_(None))
+            .values(revoked_at=now, revoke_reason=reason)
+        )
+        return (await self.session.execute(stmt)).rowcount

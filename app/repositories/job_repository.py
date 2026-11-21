@@ -4,7 +4,7 @@ No business rules; never commits."""
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,3 +46,8 @@ class JobRepository:
             .with_for_update(skip_locked=True)
         )
         return list((await self.session.execute(stmt)).scalars())
+
+    async def delete_open(self, dedupe_key: str) -> int:
+        """Remove the open (not done) job with this dedupe key, if any."""
+        result = await self.session.execute(delete(Job).where(Job.dedupe_key == dedupe_key, Job.done_at.is_(None)))
+        return result.rowcount

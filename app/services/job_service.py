@@ -38,3 +38,15 @@ async def ensure_recurring(session: AsyncSession, kind: str, every: timedelta,
     """Make sure `kind` runs every `every`. Idempotent: safe to call on every startup. True if a job was queued."""
     return await schedule(session, kind, clock.now() + every, {"every_seconds": int(every.total_seconds())},
                           dedupe_key=recurring_key(kind))
+
+
+async def cancel(session: AsyncSession, dedupe_key: str) -> int:
+    """Drop the open job with this dedupe key (a job that is already done is left alone)."""
+    return await JobRepository(session).delete_open(dedupe_key)
+
+
+async def replace(session: AsyncSession, kind: str, run_at: datetime, payload: dict[str, Any] | None,
+                  dedupe_key: str) -> bool:
+    """Replace the open job with this dedupe key by a new one (for example when a pilot is extended)."""
+    await cancel(session, dedupe_key)
+    return await schedule(session, kind, run_at, payload, dedupe_key=dedupe_key)

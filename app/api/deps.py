@@ -36,3 +36,8 @@ def get_redis_client() -> Redis:
 
 def get_clock() -> Clock:
     return system_clock
+
+
+def get_session_factory_dep():
+    """The session factory write routes open their unit of work on (tests override it with a throwaway database)."""
+    return get_session_factory()
