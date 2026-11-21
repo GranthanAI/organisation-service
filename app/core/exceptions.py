@@ -64,6 +64,12 @@ class OrgInactive(DomainError):
     code = "ORG_INACTIVE"
 
 
+class SeatsManagedByBilling(DomainError):
+    """SEAT_SOURCE=billing: staff cannot set seats here (Phase 10 reads them from billing)."""
+
+    code = "SEATS_MANAGED_BY_BILLING"
+
+
 class InviteInvalid(DomainError):
     code = "INVITE_INVALID"
 

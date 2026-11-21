@@ -41,6 +41,20 @@ class EndReason(str, Enum):
     ORG_CLOSED = "org_closed"
 
 
+class PlanCode(str, Enum):
+    """seat_state.plan_code."""
+
+    PILOT = "pilot"
+    ORG_PRO = "org_pro"
+    ORG_MAX = "org_max"
+    PAYG = "payg"
+
+
+class SeatSource(str, Enum):
+    STAFF = "staff"
+    BILLING = "billing"
+
+
 class SeatStatus(str, Enum):
     """seat_state.status: billing's subscription statuses. Staff-sourced pilot and paid rows use ACTIVE."""
 
