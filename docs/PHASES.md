@@ -679,7 +679,7 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 | --- | --- | --- |
 | billing-service | Add `GET /internal/orgs/{org_id}/subscription` → `{plan_code, variant, seats, status, period_end}`, and put `seats` and `variant` in `subscription.changed` | Phase 10 (seats from billing) |
 | billing-service | Fix `contracts/org-service.md` to the path the client calls (`/internal/memberships/{user_id}`), and to the event fields `role`, `org_type`, `reason` | Docs only |
-| billing-service | Add the new topics (`org.policy.changed`, `org.invite.created`, `org.pilot.ending`, `organisation.dlq`) to `scripts/topics.txt` so `topics.sh` creates them | Phase 4 |
+| billing-service | `scripts/topics.txt` must list the topics this service produces that it does not yet: `organisation.dlq`, `org.policy.changed`, `org.invite.created` and `org.pilot.ending` (`org.member.joined` and `org.member.left` are already there), so `topics.sh` creates them | Phase 4 (the DLQ topic is needed as soon as a message is dead-lettered) |
 | billing-service | Add org feature flags to `plans.yaml` (`lock_modes`, `shared_modes_max`, `usage_reports`, `shared_projects`), so `core/plan_features.py` can be removed | Later |
 | api-gateway | Route `/org/v1/*` and `/admin/org/v1/*` to `ORGANISATION_SERVICE_URL=http://127.0.0.1:8010`, forwarding `Authorization`; make `GET /org/v1/invites/preview` a public path (exact match); never route `/internal/*` | Phase 6 |
 | auth-service | Keep `user-events` and `user.deleted` shapes stable; long term, add `email_verified` to the JWT | Phase 9 |

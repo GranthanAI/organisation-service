@@ -2,7 +2,7 @@
 
 GranthanAI service for organisations: memberships and roles, invites (email, CSV, link, domain), seat enforcement, org policies and the admin audit log. It does not own prices, subscriptions or wallets (billing-service), login (auth-service) or conversations (conversation-service).
 
-Plan: `docs/PHASES.md`. Design: `docs/hld.md`, `docs/lld.md`. Status: Phases 0-2 (skeleton, pure rules, database schema and repositories).
+Plan: `docs/PHASES.md`. Design: `docs/hld.md`, `docs/lld.md`. Status: Phases 0-4 (skeleton, pure rules, schema, request plumbing, events and workers).
 
 ## Run
 
@@ -43,7 +43,7 @@ Always use `127.0.0.1`, never `localhost` (Windows resolves it to IPv6 first).
 
 - **billing calls us** (bearer `INTERNAL_SERVICE_TOKENS`): `GET /internal/memberships/{user_id}` (alias `/internal/users/{user_id}/membership`), `GET /internal/orgs/{org_id}`, `GET /internal/orgs/{org_id}/members` (Phase 5).
 - **We call billing**: `GET /internal/orgs/{org_id}/usage` (exists); `/subscription` not built yet.
-- **We publish** (outbox): `org.member.joined`, `org.member.left` (always with `org_type`, keyed by `user_id`), `org.policy.changed`, `org.invite.created`, `org.pilot.ending`; dead letters to `organisation.dlq` (Phase 4).
+- **We publish** (outbox, relayed by one worker at a time): `org.member.joined`, `org.member.left` (always with `org_type`, keyed by `user_id`), `org.policy.changed`, `org.invite.created`, `org.pilot.ending`; dead letters to `organisation.dlq` (Phase 4).
 - **We consume**: `user-events` (`UserRegistered`, `EmailVerified`), `user.deleted`, later `subscription.changed`.
 - **Identity**: public routes verify the auth-service JWT (HS256, issuer `https://auth.granthan.com`, revoked `jti`s checked in Redis); staff is the `roles` claim; internal routes use service tokens.
 

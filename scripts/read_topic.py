@@ -8,6 +8,7 @@ import asyncio
 import json
 
 from aiokafka import AIOKafkaConsumer, TopicPartition
+from aiokafka.admin import AIOKafkaAdminClient
 
 from app.core.config import settings
 
@@ -18,8 +19,13 @@ async def main(topic: str, contains: str | None, seconds: float) -> int:
     await consumer.start()
     found = 0
     try:
-        partitions = consumer.partitions_for_topic(topic) or {0}
-        tps = [TopicPartition(topic, p) for p in sorted(partitions)]
+        admin = AIOKafkaAdminClient(bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS)
+        await admin.start()
+        try:
+            (described,) = await admin.describe_topics([topic])
+        finally:
+            await admin.close()
+        tps = [TopicPartition(topic, p["partition"]) for p in described["partitions"]]
         consumer.assign(tps)
         await consumer.seek_to_beginning(*tps)
         deadline = asyncio.get_running_loop().time() + seconds

@@ -8,7 +8,7 @@ Status of each part: **P0-P1 built**; everything else is planned (phase in brack
 Owns organisations, memberships and roles, invites (email, CSV, link, domain), seat enforcement, org policies and the admin audit log.
 Does not own prices, subscriptions, invoices, wallets (billing-service), login or email verification (auth-service), or conversations (conversation-service, file-service). Org admins never see members' conversations.
 
-## 2. Tables (Postgres `organisation_service_db`, Alembic only) [P2: built, migrations 0001-0005]
+## 2. Tables (Postgres `organisation_service_db`, Alembic only) [P2: built, migrations 0001-0006]
 
 Hand-written migrations (`app/db/migrations/versions/`), each with a `downgrade()`; `make db-migrate` goes to head. Times are `timestamptz` (UTC, set from the Clock, no DB defaults); ids are UUIDv7 generated in Python (no DB uuid defaults); emails are `citext` (extension created in 0001); money is `int` paise. Enum columns are `text` with CHECK constraints whose values come from `app/core/enums.py` (no Postgres ENUM types). Models in `app/models/` mirror the columns (`tests/postgres/test_migrations.py` compares them).
 
@@ -20,7 +20,7 @@ Hand-written migrations (`app/db/migrations/versions/`), each with a `downgrade(
 | `seat_state` | `org_id` PK FK, `plan_code`, `variant`, `seats_bought`, `status` (billing's subscription status; staff-sourced rows use `active`), `period_end`, `source`, `source_ref`, `refreshed_at` | one row per org (created with the org in Phase 5); CHECK plan_code in (pilot, org_pro, org_max, payg); CHECK variant; CHECK source in (staff, billing); `ck_seat_state_status` in (incomplete, active, past_due, suspended, cancelling, ended) (0005); `ck_seat_state_seats_bought`: NULL (no cap) or >= 1. The row locked `FOR UPDATE` on every join |
 | `known_users` | `user_id` PK, `email` citext, `full_name`, `email_verified_at`, `deleted_at`, `updated_at` | `ix_known_users_email` |
 | `audit_log` | `id` PK, `org_id`, `actor_id`, `actor_kind`, `action`, `target_type`, `target_id` text, `details` jsonb, `reason`, `correlation_id`, `at` | CHECK actor_kind in (user, staff, service, system); no FK on `org_id` (the log outlives anything); `ix_audit_log_org_at (org_id, at DESC, id DESC)`; `ix_audit_log_org_action`. **Insert-only:** trigger `audit_log_insert_only` (BEFORE UPDATE OR DELETE, FOR EACH ROW) runs `forbid_change()`, which raises `restrict_violation` (23001). TRUNCATE is not guarded |
-| `outbox` | `id` PK, `topic`, `key`, `payload` jsonb, `created_at`, `attempts` (0), `next_attempt_at`, `published_at`, `last_error` | `ix_outbox_unpublished (next_attempt_at) WHERE published_at IS NULL` |
+| `outbox` | `id` PK, `topic`, `key`, `payload` jsonb, `created_at`, `attempts` (0), `next_attempt_at`, `published_at`, `last_error`, `correlation_id` (0006) | `ix_outbox_unpublished (next_attempt_at) WHERE published_at IS NULL` |
 | `processed_events` | `consumer`, `event_id` text, `processed_at` | PK `(consumer, event_id)`; `ix_processed_events_processed_at` (cleanup) |
 | `idempotency_keys` | `key`, `actor_id`, `route`, `request_hash`, `state`, `locked_until`, `status_code` (NULL until done), `response` jsonb (NULL until done), `created_at` | PK `(actor_id, route, key)`; `ck_idempotency_keys_state` state in (in_progress, done); `ix_idempotency_keys_created_at`; kept 24 h (0005) |
 | `jobs` | `id` PK, `kind`, `payload` jsonb, `run_at`, `attempts` (0), `locked_until`, `last_error`, `done_at`, `dedupe_key` | `ix_jobs_due (run_at) WHERE done_at IS NULL`; `ux_jobs_open_dedupe (dedupe_key) WHERE dedupe_key IS NOT NULL AND done_at IS NULL` (a recurring job is never queued twice) |
@@ -45,6 +45,9 @@ If a role `org_app` exists: `SELECT, INSERT, UPDATE, DELETE` on every table exce
 H1 `idempotency_keys`: `status_code` and `response` nullable, new `state` and `locked_until` (a reservation exists before its response). H2 `ux_join_requests_pending`. H3 `ck_seat_state_status`. H4 `invites.revoke_reason` with `ck_invites_revoke_reason` and `ck_invites_revoked_together` (existing revoked rows are backfilled with `revoked`). Downgrade drops these, and deletes idempotency reservations (they cannot exist in the old shape).
 
 **Invite expiry rule (implemented in Phase 7):** an invite past `expires_at` is closed by setting `revoked_at = now` and `revoke_reason = 'expired'`. Phase 7 does this lazily, just before creating a new invite to that email, and in the daily job. That frees `ux_invites_open_email`.
+
+### 0006_outbox_correlation
+`outbox.correlation_id` (nullable): the relay runs long after the request, so the id is stored with the row and goes out as the `correlation_id` Kafka header.
 
 ### Data access
 `app/db/session.py`: `unit_of_work()` yields one session in one transaction (commit on success, rollback on any exception, so outbox and audit rows roll back with the change). `app/db/errors.py` maps `ux_memberships_one_active_org` to `AlreadyInOrg`, `ux_invites_open_email` to `InviteAlreadyOpen`, `ux_org_domains_verified` to `DomainTaken`, `ux_join_requests_pending` to `JoinRequestPending`; other violations are re-raised unchanged. Repositories (`app/repositories/`) take the session, never commit, and hold no business rules; `AuditRepository` has no update or delete method. `MembershipRepository.list_page` is keyset-paged on `(joined_at, id)`.
@@ -71,22 +74,46 @@ Public routes verify the Bearer JWT (HS256, `JWT_SECRET_KEY`; claims `sub, email
 
 Calls out to billing-service (`clients/billing_client.py`, same bearer token, 2 s timeout, one retry): `GET /internal/orgs/{org_id}/usage?from=&to=` (exists); `GET /internal/orgs/{org_id}/subscription` (not built in billing yet; seats come from staff until Phase 10).
 
-## 4. Events
+## 4. Events and workers [P4: built]
 
-Every event carries `event_id`, `schema_version: "1.0"`, `occurred_at` (ISO UTC, `Z`). Published through the outbox [P4].
+### Envelope
+Produced events are flat JSON objects (`app/events/schemas.py`, `extra="forbid"`): `event_id` (uuid7 string), `schema_version` `"1.0"`, `occurred_at` (ISO UTC with a `Z`, whole seconds), then the fields below. A test checks that `OrgMemberJoined` and `OrgMemberLeft` carry every field billing's consumer models read (`event_id, occurred_at, org_id, user_id, role, org_type`, copied into `tests/fixtures/billing_org_member_fields.json`).
 
-| Topic | Payload | Key |
+| Topic | Payload fields | Key |
 | --- | --- | --- |
-| `org.member.joined` | `{org_id, user_id, role, org_type, source}` | `user_id` |
-| `org.member.left` | `{org_id, user_id, role, org_type, reason: left\|removed\|user_deleted\|org_closed}` | `user_id` |
-| `org.policy.changed` | `{org_id, version, lock_modes, approved_mode_ids, member_spend_cap_paise}` | `org_id` |
-| `org.invite.created` | `{org_id, invite_id, email, org_name, inviter_name, accept_url, expires_at}` | `org_id` |
-| `org.pilot.ending` | `{org_id, ends_at, days_left}` | `org_id` |
-| `organisation.dlq` | dead letters of consumed topics | n/a |
+| `org.member.joined` | `org_id, user_id, role, org_type, source` | `user_id` |
+| `org.member.left` | `org_id, user_id, role, org_type, reason: left\|removed\|user_deleted\|org_closed` | `user_id` |
+| `org.policy.changed` | `org_id, version, lock_modes, approved_mode_ids, member_spend_cap_paise` | `org_id` |
+| `org.invite.created` | `org_id, invite_id, email, org_name, inviter_name, accept_url, expires_at` | `org_id` |
+| `org.pilot.ending` | `org_id, ends_at, days_left` | `org_id` |
+| `organisation.dlq` | dead letters (below) | original key |
 
-Always send `org_type` on member events (billing defaults to `company` otherwise). Member events are keyed by `user_id`.
+Always send `org_type` on member events (billing defaults a missing one to `company`, which gives a college member 60 messages a day instead of 30). Member events are keyed by `user_id` so one person's join and leave stay in order; `enqueue` refuses a key that is not the topic's key field.
 
-Consumed: `user-events` (`UserRegistered`, `EmailVerified` inside `{event_type, payload, created_at}`; other types ignored), `user.deleted` (`{event_type, schema_version, event_id, occurred_at, user_id}`), `subscription.changed` (Phase 10 hint). Deduplicated on `processed_events`; 3 retries, then `organisation.dlq`.
+### Outbox (`events/producers.py`, `workers/outbox_worker.py`)
+- `enqueue(session, topic, key, event)` validates the event and inserts an outbox row in the CALLER's transaction: it never publishes and never commits, so the event exists if and only if the change commits.
+- **One relay at a time.** The relay holds `pg_try_advisory_lock(7240001)` on its own connection while it relays; other instances idle and retry every 5 s (and take over within seconds if the leader dies, because its connection closes and the lock goes). Reason: per-key order. Two relays could each take a row of the same key and publish them out of order (a `left` before its `joined`), and `SKIP LOCKED` batches cannot prevent that.
+- Each batch takes the oldest unpublished rows (`ORDER BY created_at, id`, 100), publishes them in that order, and **stops at the first row that fails or is not due yet**: the failure sets `attempts`, `last_error` and `next_attempt_at` with exponential backoff (1 s, 2 s, 4 s ... capped at 10 min), and later rows are not published ahead of it. `published_at` is set only after the broker acks (`acks=all`, idempotent producer, 5 ms linger). Crash after an ack but before the commit means a row is sent again: at-least-once, and consumers dedupe on `event_id`.
+- Metrics: `org_outbox_pending`, `org_outbox_oldest_age_seconds` (gauges), `org_outbox_publish_failures_total` (counter).
+
+### Consumers (`workers/consumer_worker.py`, `services/user_event_handlers.py`)
+- One consumer, group `KAFKA_CONSUMER_GROUP`, topics `user-events` and `user.deleted`, `enable_auto_commit=False`, `auto_offset_reset=earliest` (a new group first catches up on the topics' history). The offset is committed only after the handler's transaction commits, or after the message went to the DLQ.
+- **Dedupe:** every handler runs in one `unit_of_work` whose FIRST statement is `INSERT INTO processed_events (consumer, event_id) ON CONFLICT DO NOTHING`; a conflict means already done, so the handler is skipped and the offset committed. The dedupe row and the effects commit together. Consumers: `user_registered`, `email_verified`, `user_deleted`, and `user_events_ignored` (other `user-events` types are skipped but recorded).
+- **Retries:** database and connection errors are retried after 0.5 s, 2 s and 5 s (`CONSUMER_MAX_RETRIES=3`, so four tries in all), then the message goes to the DLQ. Undecodable bytes, schema errors and handler bugs go to the DLQ at once, with no retries.
+- **DLQ** (`organisation.dlq`): `{original_topic, partition, offset, key, value, value_encoding: utf-8|base64, error, attempts, failed_at}`. If the DLQ send itself fails it is retried every 5 s; on shutdown the offset is left uncommitted.
+- Handlers: `UserRegistered` upserts `known_users` (email normalised) and ignores a user whose `deleted_at` is set; `EmailVerified` keeps the earliest `email_verified_at`, updates the email, ignores deleted users, then calls the hook `on_email_verified` (does nothing until Phase 9); `user.deleted` marks the user deleted (creating a `<id>@deleted.invalid` row if unknown), ends the active membership with `membership_service.end(reason=user_deleted)`, writes `org.owner_missing` if that left the org without an owner (it never blocks), and revokes open invites to the user's email (`revoke_reason='user_deleted'`), all in one transaction.
+
+### `membership_service.end(session, org_id, user_id, reason, actor)` (pulled forward from P5c)
+In the caller's transaction: (1) load the active membership, else `NotFound`; (2) lock the org's `seat_state` row (the row every join locks; an org without one is locked through `organisations`); (3) count active owners and run `membership_rules.check_can_end`; (4) set `status` (`left` for reason `left`, otherwise `removed`), `ended_at`, `end_reason`; (5) audit `member.left` or `member.removed`; (6) enqueue `org.member.left` keyed by `user_id` with `org_type`; (7) return `EndResult(owner_missing)`. Phase 5 reuses it unchanged. There is no `join()` yet.
+
+### Job runner (`workers/job_runner.py`, `services/job_service.py`, `services/job_handlers.py`)
+- Claims due jobs (`run_at <= now`, not done, `locked_until` null or past) with `FOR UPDATE SKIP LOCKED`, sets `locked_until = now + 5 min`, and runs the handler registered for the `kind` in its own transaction (effects and `done_at` commit together).
+- Failure: `attempts + 1`, `last_error`, `run_at` pushed back with exponential backoff. After 8 attempts the job is closed with `last_error` starting `gave up` and counted in `org_jobs_failed_total{kind}`.
+- `schedule(session, kind, run_at, payload, dedupe_key=None)`; `ensure_recurring(session, kind, every, clock)` keeps ONE open job per kind (`dedupe_key = "recurring:<kind>"`, interval in the payload; the runner schedules the next run after each run, including after a give-up). Startup calls it, so it is idempotent.
+- Registered jobs: `idempotency.cleanup` (hourly: delete `idempotency_keys` older than 24 h), `processed_events.cleanup` (daily: older than 30 days), `outbox.cleanup` (daily: published more than 7 days ago; unpublished rows are never deleted). Phase 5+ adds pilot, invite and domain jobs to the same registry.
+
+### Workers at startup (`workers/manager.py`)
+With `WORKERS_ENABLED=true`, `main.py` starts the outbox relay, the consumer worker and the job runner as supervised asyncio tasks. A crash is logged and the worker restarts after 5 s; the API is never affected and `/ready` does not depend on workers (`org_worker_up{worker}` gauge shows 1/0). On shutdown the stop event is set, workers get 10 s, then they are cancelled and the Kafka clients closed.
 
 ## 5. Errors and request plumbing [P3: built]
 
