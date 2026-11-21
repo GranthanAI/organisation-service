@@ -26,7 +26,8 @@ class InviteBatch(Base):
 
 
 class Invite(Base):
-    """Only the SHA-256 of the token is stored. `ux_invites_open_email`: one open invite per email per org."""
+    """Only the SHA-256 of the token is stored, and the token itself is derived (security/tokens.py), never stored.
+    `ux_invites_open_email`: one open invite per email per org."""
 
     __tablename__ = "invites"
 
@@ -45,5 +46,9 @@ class Invite(Base):
     accepted_by: Mapped[uuid.UUID | None] = mapped_column()
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoke_reason: Mapped[str | None] = mapped_column(Text)
+    token_version: Mapped[int] = mapped_column(Integer, default=1)
+    resend_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

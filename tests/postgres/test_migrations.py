@@ -51,7 +51,7 @@ def empty_db():
 def test_upgrade_downgrade_upgrade(empty_db):
     testdb.upgrade(empty_db)
     assert tables(empty_db) == TABLES | {"alembic_version"}
-    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0006_outbox_correlation"
+    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0007_invite_tokens"
 
     testdb.downgrade(empty_db, "base")
     assert tables(empty_db) == {"alembic_version"}
@@ -192,3 +192,56 @@ def test_0006_adds_and_drops_the_outbox_correlation_column(empty_db):
     assert "correlation_id" not in columns(empty_db, "outbox")
     testdb.upgrade(empty_db)
     assert columns(empty_db, "outbox")["correlation_id"] is True
+
+
+def test_0007_up_down_up_and_existing_invites_get_defaults(empty_db):
+    testdb.upgrade(empty_db, "0006_outbox_correlation")
+    assert "token_version" not in columns(empty_db, "invites")
+
+    async def seed():
+        import uuid as _uuid
+        conn = await asyncpg.connect(empty_db.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            org = _uuid.uuid4()
+            await conn.execute("INSERT INTO organisations (id, name, slug, type, status, created_at, updated_at) "
+                               "VALUES ($1, 'o', 'o', 'college', 'active', now(), now())", org)
+            await conn.execute("INSERT INTO invites (id, org_id, kind, email, role, token_hash, expires_at, created_at) "
+                               "VALUES (gen_random_uuid(), $1, 'email', 'a@b.co', 'owner', 'oldhash', now(), now())", org)
+        finally:
+            await conn.close()
+
+    asyncio.run(seed())
+    testdb.upgrade(empty_db, "0007_invite_tokens")
+    cols = columns(empty_db, "invites")
+    assert cols["token_version"] is False and cols["resend_count"] is False          # NOT NULL with defaults
+    assert cols["last_sent_at"] is True and cols["purged_at"] is True
+    (row,) = fetch(empty_db, "SELECT token_version, resend_count, last_sent_at, purged_at, token_hash FROM invites")
+    assert (row["token_version"], row["resend_count"], row["last_sent_at"], row["purged_at"]) == (1, 0, None, None)
+    assert row["token_hash"] == "oldhash"                                              # fixed at its first send or resend
+
+    testdb.downgrade(empty_db, "0006_outbox_correlation")
+    assert not ({"token_version", "resend_count", "last_sent_at", "purged_at"} & set(columns(empty_db, "invites")))
+    assert fetch(empty_db, "SELECT count(*) AS n FROM invites")[0]["n"] == 1             # the data survives the downgrade
+    testdb.upgrade(empty_db)
+    assert columns(empty_db, "invites")["token_version"] is False
+
+
+def test_0007_rejects_nonsense_values(empty_db):
+    testdb.upgrade(empty_db)
+
+    async def attempt(sql):
+        import uuid as _uuid
+        conn = await asyncpg.connect(empty_db.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            org = _uuid.uuid4()
+            await conn.execute("INSERT INTO organisations (id, name, slug, type, status, created_at, updated_at) "
+                               "VALUES ($1, 'o', $2, 'college', 'active', now(), now())", org, f"o-{org.hex}")
+            await conn.execute(sql, org)
+        finally:
+            await conn.close()
+
+    base = ("INSERT INTO invites (id, org_id, kind, email, role, token_hash, expires_at, created_at, {col}) "
+            "VALUES (gen_random_uuid(), $1, 'email', 'a@b.co', 'member', 'h', now(), now(), {val})")
+    for col, val in (("token_version", 0), ("resend_count", -1)):
+        with pytest.raises(asyncpg.CheckViolationError):
+            asyncio.run(attempt(base.format(col=col, val=val)))

@@ -39,8 +39,8 @@ from app.repositories.org_repository import OrgRepository
 from app.repositories.policy_repository import PolicyRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.security.models import CurrentUser
-from app.security.tokens import new_token
-from app.services import audit_service, job_service, join_service, org_lifecycle_rules
+from app.security.tokens import invite_token_hash
+from app.services import audit_service, invite_service, job_service, join_service, org_lifecycle_rules
 from app.services.email_rules import normalize_email
 from app.services.permission_rules import Action, check
 from app.utils.ids import uuid7
@@ -183,13 +183,14 @@ async def create_org(
                                 clock=clock)
         owner_joined = True
     else:
-        _raw_token, token_hash = new_token()   # only the hash is stored; the raw token is discarded, never returned
-        invite = Invite(id=uuid7(), org_id=org.id, kind=InviteKind.EMAIL.value, email=owner_email,
-                        role=Role.OWNER.value, token_hash=token_hash, expires_at=now + timedelta(days=settings.INVITE_TTL_DAYS),
-                        created_by=actor.id, created_at=now)
+        invite_id = uuid7()      # the link token is derived from (id, version): only its hash is stored
+        invite = Invite(id=invite_id, org_id=org.id, kind=InviteKind.EMAIL.value, email=owner_email,
+                        role=Role.OWNER.value, token_hash=invite_token_hash(invite_id, 1),
+                        expires_at=now + timedelta(days=settings.INVITE_TTL_DAYS), created_by=actor.id, created_at=now)
         await InviteRepository(session).add(invite)
         await audit_service.record(session, actor, constants.AUDIT_INVITE_CREATED, "invite", invite.id,
                                    {"kind": "email", "role": "owner"}, reason, org_id=org.id, staff=True, clock=clock)
+        await invite_service.announce(session, org, invite, "GranthanAI", clock)    # the email job and the event
         owner_invite_pending = True
 
     if pilot:

@@ -105,11 +105,16 @@ def test_member_left_carries_all_four_reasons():
 def test_the_other_produced_models():
     policy = OrgPolicyChanged.create(CLOCK, org_id=ORG, version=2, lock_modes=True, approved_mode_ids=[ORG],
                                      member_spend_cap_paise=None)
-    invite = OrgInviteCreated.create(CLOCK, org_id=ORG, invite_id=USER, email="a@b.co", org_name="Amity",
-                                     inviter_name=None, accept_url="https://app/join/x", expires_at="2026-12-05T12:00:00Z")
+    invite = OrgInviteCreated.create(CLOCK, org_id=ORG, invite_id=USER, email="a@b.co", role=Role.MEMBER, org_name="Amity",
+                                     inviter_name=None, expires_at="2026-12-05T12:00:00Z")
     pilot = OrgPilotEnding.create(CLOCK, org_id=ORG, ends_at="2026-12-21T12:00:00Z", days_left=7)
     assert policy.model_dump(mode="json")["member_spend_cap_paise"] is None
-    assert invite.model_dump(mode="json")["accept_url"].startswith("https://")
+    body = invite.model_dump(mode="json")
+    assert set(body) == {"event_id", "schema_version", "occurred_at", "org_id", "invite_id", "email", "role", "org_name",
+                         "inviter_name", "expires_at"}
+    assert "accept_url" not in body and "token" not in json.dumps(body).lower()      # no token and no URL
+    with pytest.raises(ValidationError):                                               # and one cannot be added
+        OrgInviteCreated.model_validate({**body, "accept_url": "https://x/join/abc"})
     assert pilot.days_left == 7
 
 

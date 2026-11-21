@@ -81,12 +81,15 @@ class OrgPolicyChanged(ProducedEvent):
 
 
 class OrgInviteCreated(ProducedEvent):
+    """No token and no URL: the raw invite token is never stored or published. notification-service gets the link from
+    an internal route (not built yet)."""
+
     org_id: str
     invite_id: str
     email: str
+    role: Role
     org_name: str
     inviter_name: str | None
-    accept_url: str
     expires_at: str
 
 

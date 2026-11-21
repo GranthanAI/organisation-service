@@ -19,7 +19,7 @@ from app.models.outbox import OutboxEvent
 from app.security.models import CurrentUser
 from app.services import directory_service, join_service, org_service, seat_service
 from app.workers.job_runner import JobRunner
-from tests.support.factories import NOW
+from tests.support.factories import NOW, new_known
 
 STAFF = CurrentUser(id=uuid.UUID(int=7), email="staff@granthan.com", jti="j", roles=["admin"], staff_role=StaffRole.ADMIN)
 REASON = "pilot for the college"
@@ -28,6 +28,12 @@ REASON = "pilot for the college"
 @pytest.fixture
 def clock():
     return FixedClock(NOW)
+
+
+@pytest.fixture(autouse=True)
+def no_invite_emails(monkeypatch):
+    """These tests are about pilot jobs: the owner invite of a new org should not queue an email job of its own."""
+    monkeypatch.setattr(settings, "INVITE_EMAILS_VIA", "notification")
 
 
 async def new_pilot(session_factory, clock, name="Amity University"):
@@ -144,7 +150,7 @@ async def test_expire_moves_a_pilot_to_pilot_expired_and_audits_it(session_facto
 async def test_members_stay_members_but_joins_are_refused_and_billing_stops_granting(session_factory, clock):
     org = await new_pilot(session_factory, clock)
     async with unit_of_work(session_factory) as s:
-        member = (await org_service.add_member(s, STAFF, org.id, uuid.uuid4(), "member", REASON, clock)).user_id
+        member = (await org_service.add_member(s, STAFF, org.id, await new_known(session_factory), "member", REASON, clock)).user_id
     clock.set(NOW + timedelta(days=30))
     await run_due(session_factory, clock)
 
@@ -153,7 +159,7 @@ async def test_members_stay_members_but_joins_are_refused_and_billing_stops_gran
     assert [m.user_id for m in actives] == [member]                              # the member is still a member
     with pytest.raises(OrgInactive):
         async with unit_of_work(session_factory) as s:
-            await join_service.join(s, org.id, uuid.uuid4(), JoinSource.STAFF, actor="system", clock=clock)
+            await join_service.join(s, org.id, await new_known(session_factory), JoinSource.STAFF, actor="system", clock=clock)
     async with session_factory() as s:
         assert (await directory_service.membership_for_user(s, member))["status"] == "pilot_expired"
 

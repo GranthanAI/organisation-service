@@ -22,6 +22,7 @@ GOOD = dict(
     EMAIL_SENDER="smtp",
     SMTP_HOST="smtp.example.com",
     APP_BASE_URL="https://app.granthan.ai",
+    INVITE_TOKEN_SECRET="i" * 40,
 )
 
 
@@ -64,6 +65,9 @@ def test_production_aliases_are_guarded(env):
         ({"EMAIL_SENDER": "console"}, "EMAIL_SENDER"),
         ({"SMTP_HOST": ""}, "SMTP_HOST"),
         ({"APP_BASE_URL": "http://127.0.0.1:3000"}, "APP_BASE_URL"),
+        ({"INVITE_TOKEN_SECRET": "dev-invite-token-secret-change-me-0123456789abcdef"}, "INVITE_TOKEN_SECRET"),
+        ({"INVITE_TOKEN_SECRET": "too-short"}, "INVITE_TOKEN_SECRET"),
+        ({"INVITE_TOKEN_SECRET": ""}, "INVITE_TOKEN_SECRET"),
         ({"APP_BASE_URL": "http://localhost:3000"}, "APP_BASE_URL"),
     ],
 )
@@ -104,3 +108,14 @@ def test_the_issuer_defaults_to_what_auth_service_signs_with_and_is_never_empty(
 
 def test_forwarded_allow_ips_defaults_to_loopback():
     assert Settings(_env_file=None).FORWARDED_ALLOW_IPS == "127.0.0.1"
+
+
+def test_invite_settings_defaults_and_validation():
+    s = Settings(_env_file=None)
+    assert s.INVITE_EMAILS_VIA == "local" and len(s.INVITE_TOKEN_SECRET.encode()) >= 32
+    assert Settings(_env_file=None, INVITE_EMAILS_VIA="notification").INVITE_EMAILS_VIA == "notification"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, INVITE_EMAILS_VIA="carrier-pigeon")
+    with pytest.raises(ValidationError) as exc:
+        make(INVITE_TOKEN_SECRET="a" * 31)
+    assert "INVITE_TOKEN_SECRET" in str(exc.value) and "a" * 31 not in str(exc.value)

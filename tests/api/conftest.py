@@ -17,8 +17,11 @@ from app.repositories.known_user_repository import KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
 from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
+from app.services import invite_jobs
 from app.services.idempotency_service import IdempotencyService
+from app.workers.job_runner import JobRunner
 from tests.support.factories import NOW, make_membership, make_org, make_seat_state
+from tests.support.fakes import FakeEmailSender
 from tests.support.tokens import bearer, make_token
 
 
@@ -47,9 +50,13 @@ class World:
 
 
 class Api:
-    def __init__(self, client: AsyncClient, session_factory, clock: FixedClock) -> None:
-        self.client, self.sf, self.clock = client, session_factory, clock
+    def __init__(self, client: AsyncClient, session_factory, clock: FixedClock, mail: FakeEmailSender) -> None:
+        self.client, self.sf, self.clock, self.mail = client, session_factory, clock, mail
         self._n = 0
+
+    async def run_jobs(self) -> int:
+        """Run what is due (the invite.send jobs queued by a request): the email goes to `self.mail`, never to a network."""
+        return await JobRunner(self.sf, None, self.clock, poll_seconds=0.05).run_once()
 
     def h(self, person: Person | uuid.UUID, email: str | None = None, **kw) -> dict:
         user_id = person.id if isinstance(person, Person) else person
@@ -97,17 +104,22 @@ def clock():
 
 
 @pytest.fixture
-async def api(session_factory, clock):
+async def api(session_factory, clock, monkeypatch):
+    mail = FakeEmailSender()
+    monkeypatch.setattr(invite_jobs, "get_email_sender", lambda: mail)
     async def session():
         async with session_factory() as s:
             yield s
 
     app.dependency_overrides[get_db_session] = session
     app.dependency_overrides[get_session_factory_dep] = lambda: session_factory
-    app.dependency_overrides[get_redis_client] = lambda: fakeredis.FakeAsyncRedis()
+    redis = fakeredis.FakeAsyncRedis()                       # ONE instance: rate-limit counters must persist across requests
+    app.dependency_overrides[get_redis_client] = lambda: redis
     app.dependency_overrides[get_clock] = lambda: clock
     app.state.idempotency_service = IdempotencyService(session_factory, clock)
     async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://org") as client:
-        yield Api(client, session_factory, clock)
+        api_obj = Api(client, session_factory, clock, mail)
+        api_obj.redis = redis
+        yield api_obj
     app.dependency_overrides.clear()
     app.state.idempotency_service = None

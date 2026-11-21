@@ -75,3 +75,24 @@ class FakeConsumer:
     @property
     def drained(self) -> bool:
         return not self._queue
+
+
+class FakeEmailSender:
+    """Records the emails an invite job would send (never sends anything). `fail_times` makes the first N sends raise."""
+
+    def __init__(self) -> None:
+        self.sent: list = []
+        self.attempts = 0
+        self.fail_times = 0
+
+    async def send(self, message) -> None:
+        self.attempts += 1
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise ConnectionError("smtp unavailable")
+        self.sent.append(message)
+
+    def tokens(self) -> list[str]:
+        """The invite tokens in the links of the emails sent so far (what a recipient would click)."""
+        import re
+        return [m.group(1) for e in self.sent for m in [re.search(r"/join/([A-Za-z0-9_-]+)", e.text)] if m]

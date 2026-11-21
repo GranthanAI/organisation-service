@@ -16,6 +16,7 @@ DEV_INTERNAL_TOKENS = "billing:dev-billing-token,gateway:dev-gateway-token"
 DEV_BILLING_TOKEN = "dev-org-service-token"
 DEV_DATABASE_URL = "postgresql+asyncpg://postgres:1234@127.0.0.1:5433/organisation_service_db"
 DEV_APP_BASE_URL = "http://127.0.0.1:3000"
+DEV_INVITE_TOKEN_SECRET = "dev-invite-token-secret-change-me-0123456789abcdef"
 _KNOWN_WEAK = {"changeme", "secret", "supersecretjwtkeyforauthservicelocaldvelopment12345"}
 
 
@@ -71,6 +72,10 @@ class Settings(BaseSettings):
 
     # --- Invites ---
     INVITE_TTL_DAYS: int = 14
+    # HMAC key the invite links are derived from (a link is HMAC(secret, "invite:<id>:<version>"); the raw token is never
+    # stored). 32+ bytes. Rotating it kills every outstanding link.
+    INVITE_TOKEN_SECRET: str = DEV_INVITE_TOKEN_SECRET
+    INVITE_EMAILS_VIA: str = "local"       # local: this service sends the email | notification: only the event is published
     LINK_MAX_TTL_DAYS: int = 30
     INVITES_PER_ORG_PER_DAY: int = 200
     CSV_MAX_ROWS: int = 5000
@@ -114,6 +119,8 @@ class Settings(BaseSettings):
             problems.append("EMAIL_SENDER must be smtp (console is development only)")
         elif self.EMAIL_SENDER.strip().lower() == "smtp" and not self.SMTP_HOST:
             problems.append("SMTP_HOST must be set when EMAIL_SENDER=smtp")
+        if self.INVITE_TOKEN_SECRET == DEV_INVITE_TOKEN_SECRET or len(self.INVITE_TOKEN_SECRET.encode()) < 32:
+            problems.append("INVITE_TOKEN_SECRET must be set to a unique secret of at least 32 bytes")
         if "127.0.0.1" in self.APP_BASE_URL or "localhost" in self.APP_BASE_URL:
             problems.append("APP_BASE_URL must be the public URL (invite links are built from it)")
         return problems
@@ -122,6 +129,8 @@ class Settings(BaseSettings):
     def _fail_fast_on_unsafe_production_config(self):
         if self.SEAT_SOURCE not in ("staff", "billing"):
             raise ValueError("SEAT_SOURCE must be staff or billing")
+        if self.INVITE_EMAILS_VIA not in ("local", "notification"):
+            raise ValueError("INVITE_EMAILS_VIA must be local or notification")
         if not self.JWT_ISSUER.strip():
             raise ValueError("JWT_ISSUER must be set: the issuer is always verified")
         if self.is_production:

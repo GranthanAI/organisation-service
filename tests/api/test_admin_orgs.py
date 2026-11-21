@@ -23,7 +23,7 @@ from app.models.seat_state import SeatState
 from app.repositories.known_user_repository import KnownUserRepository
 from app.services.idempotency_service import IdempotencyService
 from app.workers.job_runner import JobRunner
-from tests.support.factories import NOW
+from tests.support.factories import NOW, new_known
 from tests.support.tokens import bearer, make_token
 
 PREFIX = "/admin/org/v1/orgs"
@@ -59,6 +59,7 @@ async def env(session_factory, clock):
     app.dependency_overrides[get_clock] = lambda: clock
     app.state.idempotency_service = IdempotencyService(session_factory, clock)
     async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://org") as c:
+        c.sf = session_factory
         yield c
     app.dependency_overrides.clear()
     app.state.idempotency_service = None
@@ -77,6 +78,11 @@ async def create(client, staff, **kw):
     r = await post(client, PREFIX, body(**kw), staff)
     assert r.status_code == 201, r.text
     return r.json()
+
+
+async def kid(env):
+    """A new known user (join refuses ids we have never seen)."""
+    return await new_known(env.sf)
 
 
 async def known_owner(sf, email=OWNER_EMAIL):
@@ -151,7 +157,15 @@ async def test_an_unknown_owner_gets_an_open_invite_and_the_response_has_no_toke
     assert "token" not in r.text.lower()
     assert invite.token_hash not in r.text and invite.token_hash not in caplog.text
     assert "invite.created" in [a.action for a in await all_rows(session_factory, AuditLog)]
-    assert [e for e in await all_rows(session_factory, OutboxEvent)] == []         # nothing is sent before Phase 7
+    # the invite is announced: one event with no token and no URL, and one email job (sent after this commits)
+    (event,) = await all_rows(session_factory, OutboxEvent)
+    assert event.topic == "org.invite.created" and event.key == out["id"]
+    assert set(event.payload) == {"event_id", "schema_version", "occurred_at", "org_id", "invite_id", "email", "role",
+                                  "org_name", "inviter_name", "expires_at"}
+    assert event.payload["role"] == "owner" and event.payload["inviter_name"] == "GranthanAI"
+    assert "accept_url" not in event.payload and "join/" not in str(event.payload)
+    (send,) = [j for j in await all_rows(session_factory, Job) if j.kind == "invite.send"]
+    assert send.payload == {"invite_id": str(invite.id), "token_version": 1}
 
 
 async def test_a_deleted_known_user_is_not_the_owner_either(env, session_factory, staff):
@@ -204,16 +218,16 @@ async def test_the_26th_pilot_member_is_refused_with_pilot_full(env, session_fac
     await known_owner(session_factory)
     org = (await create(env, staff))["id"]                                   # the owner is member 1
     for _ in range(24):
-        assert (await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+        assert (await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
                 ).status_code == 201
-    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     assert r.status_code == 409 and r.json()["code"] == "PILOT_FULL"
     assert len(await all_rows(session_factory, Membership)) == 25
 
 
 async def test_add_a_member_returns_it_and_audits_as_staff(env, session_factory, staff):
     org = (await create(env, staff))["id"]
-    user = uuid.uuid4()
+    user = await kid(env)
     r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(user), "role": "admin", "reason": REASON}, staff)
     assert r.status_code == 201
     assert {k: r.json()[k] for k in ("org_id", "user_id", "role", "status", "source")} == {
@@ -227,28 +241,28 @@ async def test_add_a_member_returns_it_and_audits_as_staff(env, session_factory,
 ])
 async def test_add_member_validates_the_role(env, staff, payload, status, code):
     org = (await create(env, staff))["id"]
-    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON, **payload}, staff)
+    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON, **payload}, staff)
     assert (r.status_code, r.json()["code"]) == (status, code)
 
 
 async def test_a_user_already_in_an_org_cannot_be_added_to_another(env, session_factory, staff):
     a = (await create(env, staff, owner_email="a@x.edu"))["id"]
     b = (await create(env, staff, owner_email="b@x.edu"))["id"]
-    user = str(uuid.uuid4())
+    user = str(await kid(env))
     assert (await post(env, f"{PREFIX}/{a}/members", {"user_id": user, "reason": REASON}, staff)).status_code == 201
     r = await post(env, f"{PREFIX}/{b}/members", {"user_id": user, "reason": REASON}, staff)
     assert r.status_code == 409 and r.json()["code"] == "ALREADY_IN_ORG"
 
 
 async def test_adding_to_an_unknown_org_is_404(env, staff):
-    r = await post(env, f"{PREFIX}/{uuid.uuid4()}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    r = await post(env, f"{PREFIX}/{uuid.uuid4()}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     assert r.status_code == 404 and r.json()["code"] == "NOT_FOUND"
 
 
 # ---------------------------------------------------------------- seats
 async def test_seats_are_needed_before_members_join_a_non_pilot_org(env, session_factory, staff):
     org = (await create(env, staff, pilot=False))["id"]
-    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     assert r.status_code == 409 and r.json()["code"] == "SEATS_FULL"          # 'incomplete' = no seats yet
     low = await post(env, f"{PREFIX}/{org}/seats", {"plan_code": "org_pro", "variant": "college", "seats_bought": 49,
                                                    "reason": REASON}, staff)
@@ -258,7 +272,7 @@ async def test_seats_are_needed_before_members_join_a_non_pilot_org(env, session
     assert ok.status_code == 200
     assert (ok.json()["plan_code"], ok.json()["seats_bought"], ok.json()["status"], ok.json()["source"]) == (
         "org_pro", 50, "active", "staff")
-    again = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    again = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     assert again.status_code == 201
 
 
@@ -366,7 +380,7 @@ async def test_close_blocks_joins_at_once_revokes_invites_and_a_job_ends_the_mem
     org = out["id"]
     await post(env, f"{PREFIX}/{org}/seats", {"plan_code": "org_pro", "variant": "college", "seats_bought": 60,
                                              "reason": REASON}, staff)
-    users = [uuid.uuid4() for _ in range(4)]
+    users = [await kid(env) for _ in range(4)]
     for u in users:
         await post(env, f"{PREFIX}/{org}/members", {"user_id": str(u), "reason": REASON}, staff)
     async with unit_of_work(session_factory) as s:
@@ -378,7 +392,7 @@ async def test_close_blocks_joins_at_once_revokes_invites_and_a_job_ends_the_mem
     assert r.status_code == 200 and r.json()["status"] == "closed" and r.json()["closed_at"] is not None
 
     # at once: joins are blocked, invites are revoked, the members are still members until the job runs
-    again = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    again = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     assert again.status_code == 409 and again.json()["code"] == "ORG_INACTIVE"
     invites = [i for i in await all_rows(session_factory, Invite) if i.org_id == uuid.UUID(org)]
     assert all(i.revoked_at == NOW and i.revoke_reason == "revoked" for i in invites if i.token_hash.startswith("late"))
@@ -404,7 +418,7 @@ async def test_the_close_job_resumes_where_it_stopped(env, session_factory, staf
     monkeypatch.setattr(constants, "CLOSE_BATCH_SIZE", 2)
     org = (await create(env, staff))["id"]
     for _ in range(5):
-        await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+        await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     await post(env, f"{PREFIX}/{org}/close", {"reason": REASON}, staff)
 
     real_end = org_jobs.membership_service.end
@@ -510,7 +524,7 @@ async def test_a_failed_write_can_be_retried_with_the_same_key(env, staff):
 async def test_get_one_includes_the_seat_state_and_the_active_count(env, session_factory, staff):
     await known_owner(session_factory)
     org = (await create(env, staff))["id"]
-    await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    await post(env, f"{PREFIX}/{org}/members", {"user_id": str(await kid(env)), "reason": REASON}, staff)
     body_ = (await env.get(f"{PREFIX}/{org}", headers=staff)).json()
     assert body_["active_count"] == 2 and body_["seat_state"]["plan_code"] == "pilot"
     assert body_["seat_state"]["seats_bought"] == 25 and body_["name"] == "Amity University"
@@ -535,3 +549,10 @@ async def test_search_by_name_slug_and_status_with_a_stable_cursor(env, session_
     assert {o["status"] for o in pilots} == {"pilot"} and len(pilots) == 3
     assert (await env.get(f"{PREFIX}?status=nonsense", headers=staff)).status_code == 422
     assert (await env.get(f"{PREFIX}?cursor=garbage", headers=staff)).status_code == 422
+
+
+async def test_adding_a_user_we_have_never_seen_is_422_unknown_user(env, staff):
+    org = (await create(env, staff))["id"]
+    r = await post(env, f"{PREFIX}/{org}/members", {"user_id": str(uuid.uuid4()), "reason": REASON}, staff)
+    assert r.status_code == 422 and r.json()["code"] == "UNKNOWN_USER"
+    assert r.headers["content-type"].startswith("application/problem+json")
