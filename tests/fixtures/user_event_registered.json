@@ -1,0 +1,12 @@
+{
+  "_source": "auth-service app/events/auth_events.py UserRegisteredEvent.model_dump(mode='json') inside app/workers/outbox_worker.py's user-events envelope",
+  "event_type": "UserRegistered",
+  "payload": {
+    "event_id": "4f0e0f4e-3b0a-4a39-9d58-0a7c6ff7a1b2",
+    "timestamp": "2026-11-21T12:00:00.123456Z",
+    "user_id": "0194b7a2-5f3e-7c11-8a41-2d3c4b5a6e70",
+    "email": "Ada.Lovelace@Amity.edu",
+    "full_name": "Ada Lovelace"
+  },
+  "created_at": "2026-11-21T12:00:00.250000+00:00"
+}

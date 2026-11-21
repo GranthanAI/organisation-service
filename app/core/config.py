@@ -51,6 +51,11 @@ class Settings(BaseSettings):
 
     # --- Workers ---
     WORKERS_ENABLED: bool = True
+    OUTBOX_BATCH_SIZE: int = 100
+    OUTBOX_POLL_SECONDS: float = 1.0
+    JOB_POLL_SECONDS: float = 2.0
+    KAFKA_DLQ_TOPIC: str = "organisation.dlq"
+    CONSUMER_MAX_RETRIES: int = 3
 
     # --- Email ---
     EMAIL_SENDER: str = "console"          # console | smtp (console is refused in production)

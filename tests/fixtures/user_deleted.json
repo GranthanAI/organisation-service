@@ -1,0 +1,8 @@
+{
+  "_source": "auth-service app/services/account_deletion_service.py user_deleted_event(), published to topic user.deleted keyed by user_id",
+  "event_type": "user.deleted",
+  "schema_version": "1.0",
+  "event_id": "7b8c9d0e-3333-4f44-a555-6677889900aa",
+  "occurred_at": "2026-11-21T13:00:00Z",
+  "user_id": "0194b7a2-5f3e-7c11-8a41-2d3c4b5a6e70"
+}

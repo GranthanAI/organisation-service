@@ -1,0 +1,11 @@
+{
+  "_source": "auth-service app/events/auth_events.py EmailVerifiedEvent.model_dump(mode='json') inside the user-events envelope",
+  "event_type": "EmailVerified",
+  "payload": {
+    "event_id": "9a1c2b3d-1111-4c2e-8f00-1a2b3c4d5e6f",
+    "timestamp": "2026-11-21T12:05:00.000000Z",
+    "user_id": "0194b7a2-5f3e-7c11-8a41-2d3c4b5a6e70",
+    "email": "ada.lovelace@amity.edu"
+  },
+  "created_at": "2026-11-21T12:05:00.100000+00:00"
+}

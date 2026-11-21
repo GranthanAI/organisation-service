@@ -1,0 +1,5 @@
+{
+  "_source": "billing-service src/billing/adapters/kafka/schemas.py: OrgMemberEvent (OrgMemberJoined and OrgMemberLeft inherit it, extra='ignore')",
+  "OrgMemberJoined": ["event_id", "occurred_at", "org_id", "user_id", "role", "org_type"],
+  "OrgMemberLeft": ["event_id", "occurred_at", "org_id", "user_id", "role", "org_type"]
+}
