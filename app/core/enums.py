@@ -41,6 +41,26 @@ class EndReason(str, Enum):
     ORG_CLOSED = "org_closed"
 
 
+class SeatStatus(str, Enum):
+    """seat_state.status: billing's subscription statuses. Staff-sourced pilot and paid rows use ACTIVE."""
+
+    INCOMPLETE = "incomplete"
+    ACTIVE = "active"
+    PAST_DUE = "past_due"
+    SUSPENDED = "suspended"
+    CANCELLING = "cancelling"
+    ENDED = "ended"
+
+
+class InviteRevokeReason(str, Enum):
+    """invites.revoke_reason: set together with revoked_at."""
+
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+    RESENT = "resent"
+    USER_DELETED = "user_deleted"
+
+
 class JoinSource(str, Enum):
     STAFF = "staff"
     INVITE = "invite"
