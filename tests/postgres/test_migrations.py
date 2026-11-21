@@ -18,7 +18,7 @@ INDEXES = {
     "ix_audit_log_org_action", "ix_outbox_unpublished", "ix_processed_events_processed_at",
     "ix_idempotency_keys_created_at", "ix_jobs_due", "ux_jobs_open_dedupe", "ux_invites_open_email",
     "ix_invites_org_created", "ix_invites_batch", "ix_invites_email", "ix_invite_batches_org",
-    "ux_org_domains_verified", "ix_join_requests_org_status",
+    "ux_org_domains_verified", "ix_join_requests_org_status", "ux_join_requests_pending",
 }
 
 
@@ -51,7 +51,7 @@ def empty_db():
 def test_upgrade_downgrade_upgrade(empty_db):
     testdb.upgrade(empty_db)
     assert tables(empty_db) == TABLES | {"alembic_version"}
-    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0004_grants"
+    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0005_plumbing_fixes"
 
     testdb.downgrade(empty_db, "base")
     assert tables(empty_db) == {"alembic_version"}
@@ -73,6 +73,7 @@ def test_each_migration_downgrades_one_step_at_a_time(empty_db):
     testdb.upgrade(empty_db, "0003_domains_policies")
     assert {"org_domains", "join_requests", "org_policies"} <= tables(empty_db)
     testdb.upgrade(empty_db, "head")
+    testdb.downgrade(empty_db, "0004_grants")
     testdb.downgrade(empty_db, "0003_domains_policies")
     testdb.downgrade(empty_db, "0002_invites")
     assert not ({"org_domains", "join_requests", "org_policies"} & tables(empty_db))
@@ -125,3 +126,58 @@ def test_models_match_the_migrated_schema(empty_db):
     expected = {(t.name, c.name): c.nullable for t in Base.metadata.tables.values() for c in t.columns}
     assert set(Base.metadata.tables) == TABLES
     assert expected == actual
+
+
+def columns(url, table):
+    rows = fetch(url, "SELECT column_name, is_nullable FROM information_schema.columns "
+                      "WHERE table_schema = 'public' AND table_name = $1", table)
+    return {r["column_name"]: r["is_nullable"] == "YES" for r in rows}
+
+
+def test_0005_up_down_up(empty_db):
+    testdb.upgrade(empty_db, "0004_grants")
+    before = columns(empty_db, "idempotency_keys")
+    assert before["status_code"] is False and "state" not in before and "revoke_reason" not in columns(empty_db, "invites")
+
+    testdb.upgrade(empty_db, "0005_plumbing_fixes")
+    idem = columns(empty_db, "idempotency_keys")
+    assert idem["status_code"] is True and idem["response"] is True and idem["locked_until"] is True
+    assert idem["state"] is False
+    assert columns(empty_db, "invites")["revoke_reason"] is True
+    defs = {r["indexname"]: r["indexdef"] for r in fetch(empty_db, "SELECT indexname, indexdef FROM pg_indexes")}
+    assert "status = 'pending'" in defs["ux_join_requests_pending"] and "UNIQUE" in defs["ux_join_requests_pending"]
+
+    testdb.downgrade(empty_db, "0004_grants")
+    assert columns(empty_db, "idempotency_keys") == before
+    assert "revoke_reason" not in columns(empty_db, "invites")
+    assert "ux_join_requests_pending" not in {r["indexname"] for r in fetch(empty_db, "SELECT indexname FROM pg_indexes")}
+
+    testdb.upgrade(empty_db)
+    assert columns(empty_db, "idempotency_keys")["state"] is False
+
+
+def test_0005_downgrade_drops_reservations_and_upgrade_backfills_revoked_invites(empty_db):
+    testdb.upgrade(empty_db, "0004_grants")
+
+    async def go():
+        conn = await asyncpg.connect(empty_db.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            org = "00000000-0000-7000-8000-000000000001"
+            await conn.execute("INSERT INTO organisations (id, name, slug, type, status, created_at, updated_at) "
+                               "VALUES ($1, 'o', 'o', 'college', 'active', now(), now())", __import__("uuid").UUID(org))
+            await conn.execute("INSERT INTO invites (id, org_id, kind, email, role, token_hash, expires_at, revoked_at, "
+                               "created_at) VALUES (gen_random_uuid(), $1, 'email', 'a@b.co', 'member', 'h', now(), now(), now())",
+                               __import__("uuid").UUID(org))
+        finally:
+            await conn.close()
+
+    asyncio.run(go())
+    testdb.upgrade(empty_db)
+    assert fetch(empty_db, "SELECT revoke_reason FROM invites")[0]["revoke_reason"] == "revoked"
+    # a reservation (no status yet) is dropped on the way down, a finished row survives
+    fetch(empty_db, "INSERT INTO idempotency_keys (key, actor_id, route, request_hash, state, created_at) "
+                    "VALUES ('k1', gen_random_uuid(), 'r', 'h', 'in_progress', now()) RETURNING 1")
+    fetch(empty_db, "INSERT INTO idempotency_keys (key, actor_id, route, request_hash, state, status_code, created_at) "
+                    "VALUES ('k2', gen_random_uuid(), 'r', 'h', 'done', 201, now()) RETURNING 1")
+    testdb.downgrade(empty_db, "0004_grants")
+    assert [r["key"] for r in fetch(empty_db, "SELECT key FROM idempotency_keys")] == ["k2"]

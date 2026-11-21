@@ -10,7 +10,7 @@ from app.db.base import Base
 
 
 class IdempotencyKey(Base):
-    """Scoped to (actor_id, route); kept 24 h."""
+    """Scoped to (actor_id, route, key); kept 24 h. A row is first a reservation (in_progress, no response yet)."""
 
     __tablename__ = "idempotency_keys"
 
@@ -18,6 +18,8 @@ class IdempotencyKey(Base):
     route: Mapped[str] = mapped_column(Text, primary_key=True)
     key: Mapped[str] = mapped_column(Text, primary_key=True)
     request_hash: Mapped[str] = mapped_column(Text)
-    status_code: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(Text)  # in_progress | done
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status_code: Mapped[int | None] = mapped_column(Integer)
     response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
