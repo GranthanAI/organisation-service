@@ -4,7 +4,6 @@ Every function runs in the CALLER's transaction, checks the matching STAFF_* act
 with `actor_kind=staff` and the staff member's reason. Members are added only through `join_service.join`.
 """
 
-import base64
 import re
 import uuid
 from dataclasses import dataclass
@@ -45,6 +44,7 @@ from app.services import audit_service, job_service, join_service, org_lifecycle
 from app.services.email_rules import normalize_email
 from app.services.permission_rules import Action, check
 from app.utils.ids import uuid7
+from app.utils.pagination import decode_cursor, encode_cursor
 
 GSTIN = re.compile(constants.GSTIN_PATTERN)
 SLUG_MIN, SLUG_MAX = 3, 60
@@ -68,6 +68,8 @@ def validate_gstin_and_state(gstin: str | None, state_code: str | None) -> tuple
         state_code = state_code.strip()
         if state_code not in constants.GST_STATE_CODES:
             raise ValidationFailed("state_code is not a GST state code")
+    if gstin is not None and state_code is not None and gstin[:2] != state_code:
+        raise ValidationFailed("the first two digits of the gstin must equal the state_code")
     return gstin, state_code
 
 
@@ -196,19 +198,6 @@ async def create_org(
 
 
 # ------------------------------------------------------------------ read
-def encode_cursor(created_at: datetime, org_id: uuid.UUID) -> str:
-    return base64.urlsafe_b64encode(f"{created_at.isoformat()}|{org_id}".encode()).decode()
-
-
-def decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
-        stamp, _, ident = raw.partition("|")
-        return datetime.fromisoformat(stamp), uuid.UUID(ident)
-    except Exception as exc:
-        raise ValidationFailed("cursor is not valid") from exc
-
-
 async def search_orgs(session: AsyncSession, q: str | None, status: str | None, cursor: str | None,
                       limit: int = 50) -> tuple[list[Organisation], str | None]:
     if status is not None and status not in {s.value for s in OrgStatus}:
