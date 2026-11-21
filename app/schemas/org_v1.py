@@ -118,8 +118,71 @@ class AuditRowOut(BaseModel):
     details: dict[str, Any]
     reason: str | None
     at: datetime
+    actor_label: str | None = None   # org view only: a person's name or email, "GranthanAI staff" or "GranthanAI"
 
 
 class AuditPageOut(BaseModel):
     items: list[AuditRowOut]
+    next_cursor: str | None
+
+
+# ---- invites
+class CreateInvitesIn(_Request):
+    emails: list[str] = Field(min_length=1, max_length=50)
+    role: str = "member"
+
+
+class InviteResultOut(BaseModel):
+    email: str
+    result: str     # created | invalid_email | duplicate_in_request | already_member | in_another_org | open_invite_exists
+    invite_id: uuid.UUID | None = None
+
+
+class SeatsInfoOut(BaseModel):
+    used: int
+    bought: int | None
+    open_invites: int
+    warning: bool
+
+
+class CreateInvitesOut(BaseModel):
+    results: list[InviteResultOut]
+    seats: SeatsInfoOut
+
+
+class PreviewOut(BaseModel):
+    org_name: str
+    org_type: str
+    inviter_name: str
+    role: str
+    email_hint: str
+    expires_at: datetime
+
+
+class AcceptIn(_Request):
+    token: str = Field(min_length=8, max_length=200)
+
+
+class AcceptOut(BaseModel):
+    org_id: uuid.UUID
+    org_name: str
+    role: str
+
+
+class InviteRowOut(BaseModel):
+    invite_id: uuid.UUID
+    email: str | None
+    role: str
+    status: str                       # open | accepted | expired | revoked (computed)
+    created_by: uuid.UUID | None
+    created_at: datetime
+    expires_at: datetime
+    last_sent_at: datetime | None
+    resend_count: int
+    accepted_by: uuid.UUID | None
+    accepted_at: datetime | None
+
+
+class InvitePageOut(BaseModel):
+    items: list[InviteRowOut]
     next_cursor: str | None

@@ -67,9 +67,11 @@ async def test_each_row_has_the_documented_fields(api):
     world = await api.seed_org()
     await record(api, world, 1, user_actor(world.admin), reason="tidying up")
     (row,) = (await api.client.get(url(world), headers=api.h(world.owner))).json()["items"]
-    assert set(row) == {"id", "action", "actor_id", "actor_kind", "target_type", "target_id", "details", "reason", "at"}
+    assert set(row) == {"id", "action", "actor_id", "actor_kind", "target_type", "target_id", "details", "reason", "at",
+                        "actor_label"}
     assert (row["action"], row["actor_id"], row["actor_kind"], row["target_type"]) == (
         "member.role_changed", str(world.admin.id), "user", "membership")
+    assert row["actor_label"] == world.admin.name                       # a user row: the person's name
 
 
 async def test_filter_by_action_and_by_actor(api):
@@ -105,12 +107,13 @@ async def test_staff_reasons_are_hidden_from_the_org_and_staff_details_keys_are_
     rows = (await api.client.get(url(world), headers=api.h(world.owner))).json()["items"]
     staff_row = next(r for r in rows if r["action"] == "seats.set")
     assert staff_row["actor_kind"] == "staff" and staff_row["reason"] is None
+    assert staff_row["actor_id"] is None and staff_row["actor_label"] == "GranthanAI staff"     # M1: who is hidden
     assert staff_row["details"] == {"seats": 50}                                    # staff_note is gone
     user_row = next(r for r in rows if r["actor_kind"] == "user")
     assert user_row["reason"] == "the admin said so"
     assert user_row["details"] == {"keep": 2}                                        # staff_x is gone
     system_row = next(r for r in rows if r["actor_kind"] == "system")
-    assert system_row["reason"] is None
+    assert system_row["reason"] is None and system_row["actor_id"] is None and system_row["actor_label"] == "GranthanAI"
 
 
 async def test_the_staff_route_shows_everything(api, staff_headers):
@@ -121,6 +124,7 @@ async def test_the_staff_route_shows_everything(api, staff_headers):
     (row,) = (await api.client.get(staff_url(world), headers=staff_headers)).json()["items"]
     assert row["reason"] == "sold 50 seats to sales" and row["details"] == {"seats": 50, "staff_note": "call back in March"}
     assert row["actor_kind"] == "staff"
+    assert row["actor_id"] == str(staff.id) and row["actor_label"] is None            # the staff route is unchanged
 
 
 async def test_support_can_read_the_staff_route_and_it_pages_and_filters_like_the_other(api):
@@ -161,3 +165,26 @@ async def test_an_org_only_sees_its_own_audit_rows(api):
     await record(api, b, 2, user_actor(b.owner))
     rows = (await api.client.get(url(a), headers=api.h(a.owner))).json()["items"]
     assert [r["details"]["i"] for r in rows] == [1]
+
+
+async def test_service_rows_are_labelled_granthanai_and_a_user_without_a_name_shows_their_email(api):
+    from app.security.models import ServiceCaller
+    world = await api.seed_org(admins=0, members=0)
+    async with unit_of_work(api.sf) as s:
+        nameless = await api.person(s, world.org.id, "member", 5)
+        await s.execute(__import__("sqlalchemy").text("UPDATE known_users SET full_name = NULL WHERE user_id = :u"), {"u": nameless.id})
+    await record(api, world, 1, ServiceCaller("billing"), action="org.status_changed")
+    await record(api, world, 2, user_actor(nameless))
+    rows = (await api.client.get(url(world), headers=api.h(world.owner))).json()["items"]
+    service_row = next(r for r in rows if r["actor_kind"] == "service")
+    assert service_row["actor_id"] is None and service_row["actor_label"] == "GranthanAI"
+    assert "service" not in service_row["details"]                                  # which service is not shown either
+    user_row = next(r for r in rows if r["actor_kind"] == "user")
+    assert user_row["actor_label"] == nameless.email and user_row["actor_id"] == str(nameless.id)
+
+
+async def test_a_user_who_is_no_longer_known_gets_a_neutral_label(api):
+    world = await api.seed_org()
+    await record(api, world, 1, user_actor(CurrentUser(id=uuid.uuid4(), email="gone@x.co", jti="j", roles=[])))
+    (row,) = (await api.client.get(url(world), headers=api.h(world.owner))).json()["items"]
+    assert row["actor_label"] == "A former member"
