@@ -17,6 +17,9 @@ class PlanFeatures:
     shared_modes_max: int | None           # None = unlimited
     usage_reports: bool
     member_spend_cap: bool
+    csv_invites: bool = True
+    invite_links: bool = True
+    domains: bool = True
 
 
 PLANS: dict[PlanCode, PlanFeatures] = {
