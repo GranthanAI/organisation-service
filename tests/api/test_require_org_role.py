@@ -76,19 +76,19 @@ def headers_for(user: uuid.UUID, **kw):
     return bearer(make_token(sub=user, **kw))
 
 
-@pytest.mark.parametrize("action", list(Action))
 @pytest.mark.parametrize("role", [Role.OWNER, Role.ADMIN, Role.MEMBER])
-async def test_each_member_role_against_every_action(world, action, role):
+async def test_each_member_role_against_every_action(world, role):
     client, org, _other, people = world
-    r = await client.get(f"/t/orgs/{org.id}/{action.value}", headers=headers_for(people[role.value]))
-    permission = permission_for(action, role)
-    if permission is Permission.DENIED:
-        assert r.status_code == 403, (action, role)           # a member knows the org exists: 403, not 404
-        assert r.json()["code"] == "FORBIDDEN_ROLE"
-    else:
-        # ALLOWED, and OWN_ROLE_ONLY (the use case checks the target's role)
-        assert r.status_code == 200, (action, role)
-        assert r.json()["role"] == role.value and r.json()["org_id"] == str(org.id)
+    for action in Action:
+        r = await client.get(f"/t/orgs/{org.id}/{action.value}", headers=headers_for(people[role.value]))
+        permission = permission_for(action, role)
+        if permission is Permission.DENIED:
+            assert r.status_code == 403, (action, role)       # a member knows the org exists: 403, not 404
+            assert r.json()["code"] == "FORBIDDEN_ROLE", (action, role)
+        else:
+            # ALLOWED, and OWN_ROLE_ONLY (the use case checks the target's role)
+            assert r.status_code == 200, (action, role)
+            assert r.json()["role"] == role.value and r.json()["org_id"] == str(org.id)
 
 
 async def test_the_context_carries_org_user_role_and_membership(world):
@@ -100,12 +100,12 @@ async def test_the_context_carries_org_user_role_and_membership(world):
 
 
 @pytest.mark.parametrize("who", ["outsider", "ended", "other_org"])
-@pytest.mark.parametrize("action", [Action.VIEW_ORG, Action.INVITE, Action.CLOSE_ORG, Action.STAFF_SET_SEATS])
-async def test_non_members_and_ended_members_get_404_never_403(world, who, action):
+async def test_non_members_and_ended_members_get_404_never_403(world, who):
     client, org, _other, people = world
-    r = await client.get(f"/t/orgs/{org.id}/{action.value}", headers=headers_for(people[who]))
-    assert r.status_code == 404 and r.json()["code"] == "NOT_FOUND"
-    assert r.headers["content-type"].startswith("application/problem+json")
+    for action in Action:   # every action, including the staff-only ones
+        r = await client.get(f"/t/orgs/{org.id}/{action.value}", headers=headers_for(people[who]))
+        assert r.status_code == 404 and r.json()["code"] == "NOT_FOUND", (who, action)
+        assert r.headers["content-type"].startswith("application/problem+json")
 
 
 async def test_a_missing_org_looks_the_same_as_someone_elses_org(world):
