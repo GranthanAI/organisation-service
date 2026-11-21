@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 from app.core.enums import Role, StaffRole
 from app.core.exceptions import Unauthenticated
+from app.services import permission_rules
 from app.services.email_rules import normalize_email
+from app.services.permission_rules import Action
 
 
 def staff_role_from_roles(roles: list[str]) -> StaffRole | None:
@@ -57,3 +59,10 @@ class OrgContext:
     user: CurrentUser
     role: Role
     membership_id: uuid.UUID
+    action: Action
+
+    def check_target(self, target_role: Role) -> None:
+        """Run the matrix against the person being acted on (an admin may remove members only).
+        `require_org_role` lets OwnRoleOnly actions through because only the use case knows the target; call this
+        for remove and role changes. Raises ForbiddenRole."""
+        permission_rules.check(self.action, self.role, target_role)

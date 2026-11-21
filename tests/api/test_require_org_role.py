@@ -42,6 +42,16 @@ def build_app(session_factory) -> FastAPI:
     for action in Action:
         add(action)
 
+    @app.get("/t/orgs/{org_id}/remove/{target}")
+    async def remove(target: Role, ctx: OrgContext = Depends(require_org_role(Action.REMOVE_MEMBER))):
+        ctx.check_target(target)
+        return {"removed": target.value}
+
+    @app.get("/t/orgs/{org_id}/invite-target/{target}")
+    async def invite_target(target: Role, ctx: OrgContext = Depends(require_org_role(Action.INVITE))):
+        ctx.check_target(target)    # an ALLOWED action ignores the target
+        return {"ok": True}
+
     @app.get("/t/staff-only")
     async def staff_only(user: CurrentUser = Depends(require_staff(StaffRole.SUPPORT))):
         return {"ok": True}
@@ -146,3 +156,28 @@ async def test_require_staff_levels(world):
     only_support = await client.get("/t/admin-only", headers=headers_for(uuid.uuid4(), roles=["support"]))
     only_admin = await client.get("/t/admin-only", headers=headers_for(uuid.uuid4(), roles=["admin"]))
     assert only_support.status_code == 403 and only_admin.status_code == 200
+
+
+@pytest.mark.parametrize("actor, target, status", [
+    ("owner", "member", 200), ("owner", "admin", 200), ("owner", "owner", 200),
+    ("admin", "member", 200), ("admin", "admin", 403), ("admin", "owner", 403),
+])
+async def test_check_target_enforces_the_own_role_rule(world, actor, target, status):
+    client, org, _other, people = world
+    r = await client.get(f"/t/orgs/{org.id}/remove/{target}", headers=headers_for(people[actor]))
+    assert r.status_code == status
+    if status == 403:
+        assert r.json()["code"] == "FORBIDDEN_ROLE"
+
+
+async def test_a_member_is_refused_by_the_dependency_before_check_target_is_reached(world):
+    client, org, _other, people = world
+    r = await client.get(f"/t/orgs/{org.id}/remove/member", headers=headers_for(people["member"]))
+    assert r.status_code == 403
+
+
+async def test_check_target_on_an_allowed_action_ignores_the_target(world):
+    client, org, _other, people = world
+    for target in ("owner", "admin", "member"):
+        r = await client.get(f"/t/orgs/{org.id}/invite-target/{target}", headers=headers_for(people["admin"]))
+        assert r.status_code == 200
