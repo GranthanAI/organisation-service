@@ -5,6 +5,7 @@ from app.core.enums import JoinDecision
 
 class DomainError(Exception):
     code = "DOMAIN_ERROR"
+    headers: dict[str, str] | None = None   # extra response headers (Retry-After, WWW-Authenticate)
 
     def __init__(self, detail: str = "") -> None:
         super().__init__(detail or self.code)
@@ -75,6 +76,70 @@ class NotFound(DomainError):
     """A row the caller may not know exists, or does not. P3c lists no NOT_FOUND code; this one is 404 (Phase 3)."""
 
     code = "NOT_FOUND"
+
+
+class Unauthenticated(DomainError):
+    """Missing, invalid, expired, revoked or deleted-user credentials. The detail never says which."""
+
+    code = "UNAUTHENTICATED"
+    headers = {"WWW-Authenticate": "Bearer"}
+
+    def __init__(self) -> None:
+        super().__init__("Authentication required")
+
+
+class UpstreamUnavailable(DomainError):
+    code = "UPSTREAM_UNAVAILABLE"
+
+
+class RateLimited(DomainError):
+    code = "RATE_LIMITED"
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("Too many requests")
+        self.retry_after = max(1, int(retry_after))
+        self.headers = {"Retry-After": str(self.retry_after)}
+
+
+class IdempotencyMismatch(DomainError):
+    code = "IDEMPOTENCY_MISMATCH"
+
+
+class IdempotencyInProgress(DomainError):
+    code = "IDEMPOTENCY_IN_PROGRESS"
+
+    def __init__(self, retry_after: int = 1) -> None:
+        super().__init__("A request with this Idempotency-Key is still being processed")
+        self.retry_after = max(1, int(retry_after))
+        self.headers = {"Retry-After": str(self.retry_after)}
+
+
+class ValidationFailed(DomainError):
+    code = "VALIDATION_ERROR"
+
+
+class EmailNotVerified(DomainError):
+    code = "EMAIL_NOT_VERIFIED"
+
+
+class InviteEmailMismatch(DomainError):
+    code = "INVITE_EMAIL_MISMATCH"
+
+
+class FeatureNotInPlan(DomainError):
+    code = "FEATURE_NOT_IN_PLAN"
+
+
+class VersionConflict(DomainError):
+    code = "VERSION_CONFLICT"
+
+
+class PublicEmailDomain(DomainError):
+    code = "PUBLIC_EMAIL_DOMAIN"
+
+
+class CsvInvalid(DomainError):
+    code = "CSV_INVALID"
 
 
 _JOIN_ERRORS: dict[JoinDecision, type[DomainError] | None] = {

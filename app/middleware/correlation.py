@@ -23,6 +23,7 @@ class CorrelationIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         supplied = request.headers.get(CORRELATION_ID_HEADER, "")
         correlation_id = supplied if _VALID.match(supplied) else str(uuid.uuid4())
+        request.state.correlation_id = correlation_id   # for handlers that run outside this middleware (500s)
         token = _correlation_id_ctx.set(correlation_id)
         try:
             response: Response = await call_next(request)
