@@ -70,6 +70,12 @@ class SeatsManagedByBilling(DomainError):
     code = "SEATS_MANAGED_BY_BILLING"
 
 
+class UnknownUser(DomainError):
+    """A user id we have never seen (no known_users row). Logged-in users are always known (K2)."""
+
+    code = "UNKNOWN_USER"
+
+
 class InviteInvalid(DomainError):
     code = "INVITE_INVALID"
 

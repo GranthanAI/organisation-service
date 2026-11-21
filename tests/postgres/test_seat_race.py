@@ -16,11 +16,12 @@ from app.repositories.membership_repository import MembershipRepository
 from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.services import join_service
-from tests.support.factories import NOW, make_membership, make_org, make_seat_state
+from tests.support.factories import NOW, ensure_known, make_membership, make_org, make_seat_state
 
 
 async def attempt(session_factory, org_id, user_id):
     clock = FixedClock(NOW)
+    await ensure_known(session_factory, user_id)
     try:
         async with unit_of_work(session_factory) as s:
             await join_service.join(s, org_id, user_id, JoinSource.LINK, actor="system", clock=clock)

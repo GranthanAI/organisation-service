@@ -62,3 +62,16 @@ def make_outbox(**kw) -> OutboxEvent:
     defaults = dict(id=uuid7(), topic="org.member.joined", key=str(uuid7()), payload={"x": 1}, created_at=NOW,
                     next_attempt_at=NOW)
     return OutboxEvent(**{**defaults, **kw})
+
+
+async def ensure_known(session_factory, user_id: uuid.UUID, email: str | None = None, name: str | None = None) -> uuid.UUID:
+    """Make `user_id` a known user (join() refuses ids we have never seen)."""
+    from app.db.session import unit_of_work
+    from app.repositories.known_user_repository import KnownUserRepository
+    async with unit_of_work(session_factory) as s:
+        await KnownUserRepository(s).upsert(user_id, email or f"u{user_id.hex[:12]}@amity.edu", name, NOW)
+    return user_id
+
+
+async def new_known(session_factory) -> uuid.UUID:
+    return await ensure_known(session_factory, uuid.uuid4())

@@ -28,7 +28,15 @@ from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.security.models import CurrentUser
 from app.services import join_service
-from tests.support.factories import NOW, make_invite, make_membership, make_org, make_seat_state
+from tests.support.factories import (
+    NOW,
+    ensure_known,
+    make_invite,
+    make_membership,
+    make_org,
+    make_seat_state,
+    new_known,
+)
 
 
 @pytest.fixture
@@ -54,6 +62,7 @@ async def seed(session_factory, status="active", type="college", seats=5, seat_s
 async def do_join(session_factory, clock, org, user=None, source=JoinSource.STAFF, role=Role.MEMBER, invite=None,
                   actor="system", staff=False):
     user = user or uuid.uuid4()
+    await ensure_known(session_factory, user)
     async with unit_of_work(session_factory) as s:
         m = await join_service.join(s, org.id, user, source, role, invite, actor=actor, staff=staff, clock=clock)
     return user, m
@@ -258,7 +267,7 @@ async def test_an_email_invite_is_marked_used_and_accepted(session_factory, cloc
     creator = uuid.uuid4()
     async with unit_of_work(session_factory) as s:
         invite = await InviteRepository(s).add(make_invite(org.id, created_by=creator))
-    user = uuid.uuid4()
+    user = await new_known(session_factory)
     async with unit_of_work(session_factory) as s:
         invite = await InviteRepository(s).get(invite.id)
         await join_service.join(s, org.id, user, JoinSource.INVITE, invite=invite, actor="system", clock=clock)
@@ -275,7 +284,7 @@ async def test_a_csv_invite_is_accepted_like_an_email_one(session_factory, clock
     org = await seed(session_factory)
     async with unit_of_work(session_factory) as s:
         invite = await InviteRepository(s).add(make_invite(org.id, kind="csv", token_hash="csv-x"))
-    user = uuid.uuid4()
+    user = await new_known(session_factory)
     async with unit_of_work(session_factory) as s:
         inv = await InviteRepository(s).get(invite.id)
         await join_service.join(s, org.id, user, JoinSource.CSV, invite=inv, actor="system", clock=clock)
@@ -291,7 +300,7 @@ async def test_a_link_invite_counts_uses_but_is_never_accepted(session_factory, 
     for _ in range(3):
         async with unit_of_work(session_factory) as s:
             inv = await InviteRepository(s).get(link.id)
-            await join_service.join(s, org.id, uuid.uuid4(), JoinSource.LINK, invite=inv, actor="system", clock=clock)
+            await join_service.join(s, org.id, await new_known(session_factory), JoinSource.LINK, invite=inv, actor="system", clock=clock)
     async with session_factory() as s:
         got = await s.get(Invite, link.id)
     assert got.uses == 3 and got.accepted_at is None and got.accepted_by is None
@@ -304,7 +313,7 @@ async def test_a_refused_join_does_not_use_the_invite(session_factory, clock):
     with pytest.raises(SeatsFull):
         async with unit_of_work(session_factory) as s:
             inv = await InviteRepository(s).get(invite.id)
-            await join_service.join(s, org.id, uuid.uuid4(), JoinSource.INVITE, invite=inv, actor="system", clock=clock)
+            await join_service.join(s, org.id, await new_known(session_factory), JoinSource.INVITE, invite=inv, actor="system", clock=clock)
     async with session_factory() as s:
         got = await s.get(Invite, invite.id)
     assert got.uses == 0 and got.accepted_at is None                       # the invite stays open
@@ -317,7 +326,7 @@ async def test_an_invite_from_another_org_is_a_programming_error(session_factory
     with pytest.raises(ValueError):
         async with unit_of_work(session_factory) as s:
             inv = await InviteRepository(s).get(invite.id)
-            await join_service.join(s, a.id, uuid.uuid4(), JoinSource.INVITE, invite=inv, actor="system", clock=clock)
+            await join_service.join(s, a.id, await new_known(session_factory), JoinSource.INVITE, invite=inv, actor="system", clock=clock)
 
 
 # ---------------------------------------------------------------- rollback
@@ -325,7 +334,7 @@ async def test_everything_rolls_back_with_the_callers_transaction(session_factor
     org = await seed(session_factory)
     with pytest.raises(RuntimeError):
         async with unit_of_work(session_factory) as s:
-            await join_service.join(s, org.id, uuid.uuid4(), JoinSource.STAFF, actor="system", clock=clock)
+            await join_service.join(s, org.id, await new_known(session_factory), JoinSource.STAFF, actor="system", clock=clock)
             await s.flush()
             raise RuntimeError("a later step failed")
     assert await rows(session_factory, Membership) == []
@@ -352,3 +361,20 @@ async def test_the_bypass_needs_incomplete_seats_and_no_active_owner(session_fac
     ownerless = await seed(session_factory, seats=None, seat_status="incomplete", members=2)
     _, m = await do_join(session_factory, clock, ownerless, role=Role.OWNER)    # no active owner: allowed
     assert m.role == "owner"
+
+
+async def test_an_unknown_user_gets_unknown_user_422_and_a_deleted_one_stays_not_found(session_factory, clock):
+    from app.core.exceptions import UnknownUser
+    org = await seed(session_factory)
+    stranger = uuid.uuid4()                                                   # no known_users row at all
+    with pytest.raises(UnknownUser) as exc:
+        async with unit_of_work(session_factory) as s:
+            await join_service.join(s, org.id, stranger, JoinSource.STAFF, actor="system", clock=clock)
+    assert exc.value.code == "UNKNOWN_USER"
+    assert await rows(session_factory, Membership) == [] and await rows(session_factory, OutboxEvent) == []
+    gone = await new_known(session_factory)
+    async with unit_of_work(session_factory) as s:
+        await KnownUserRepository(s).mark_deleted(gone, NOW)
+    with pytest.raises(NotFound):
+        async with unit_of_work(session_factory) as s:
+            await join_service.join(s, org.id, gone, JoinSource.STAFF, actor="system", clock=clock)

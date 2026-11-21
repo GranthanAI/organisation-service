@@ -5,7 +5,7 @@ Everything runs in the CALLER's transaction. In order:
   1. lock the organisation's `seat_state` row (the same row `membership_service.end` locks), so two joins cannot both
      take the last seat; an organisation without one is locked through its `organisations` row;
   2. refuse a user who already has an active membership (ALREADY_IN_ORG), then apply `seat_rules.can_join`;
-  3. refuse a deleted user;
+  3. refuse a user we do not know (UNKNOWN_USER, 422) and a deleted one (NotFound);
   4. insert the membership (the unique index `ux_memberships_one_active_org` is the final guard against a race);
   5. count the invite's use, if one was used;
   6. audit `member.joined`;
@@ -24,7 +24,7 @@ from app.core import constants
 from app.core.clock import Clock, system_clock
 from app.core.config import settings
 from app.core.enums import InviteKind, JoinDecision, JoinSource, MembershipStatus, OrgStatus, OrgType, Role, SeatStatus
-from app.core.exceptions import AlreadyInOrg, ForbiddenRole, NotFound, join_decision_error
+from app.core.exceptions import AlreadyInOrg, ForbiddenRole, NotFound, UnknownUser, join_decision_error
 from app.db.errors import map_integrity_error
 from app.events import topics
 from app.events.producers import enqueue
@@ -85,7 +85,9 @@ async def join(
 
     # 3. a deleted user can never join
     known = await KnownUserRepository(session).get(user_id)
-    if known is not None and known.deleted_at is not None:
+    if known is None:
+        raise UnknownUser("We do not know this user yet")   # logged-in users are always known (known_users sync)
+    if known.deleted_at is not None:
         raise NotFound("User not found")
 
     # 4. the membership
