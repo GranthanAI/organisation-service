@@ -330,3 +330,25 @@ async def test_everything_rolls_back_with_the_callers_transaction(session_factor
             raise RuntimeError("a later step failed")
     assert await rows(session_factory, Membership) == []
     assert await rows(session_factory, AuditLog) == [] and await rows(session_factory, OutboxEvent) == []
+
+
+async def test_an_owner_cannot_bypass_a_full_seat_state(session_factory, clock):
+    """The first-owner exception is only for incomplete or missing seats, never for seats that are really full."""
+    org = await seed(session_factory, seats=2, members=2)                       # full, and nobody is an owner
+    with pytest.raises(SeatsFull):
+        await do_join(session_factory, clock, org, role=Role.OWNER)
+    pilot = await seed(session_factory, status="pilot", seats=25, members=25, pilot_ends_at=NOW + timedelta(days=3))
+    with pytest.raises(PilotFull):
+        await do_join(session_factory, clock, pilot, role=Role.OWNER)
+    assert len([m for m in await rows(session_factory, Membership) if m.role == "owner"]) == 0
+
+
+async def test_the_bypass_needs_incomplete_seats_and_no_active_owner(session_factory, clock):
+    with_owner = await seed(session_factory, seats=None, seat_status="incomplete", owners=1)
+    with pytest.raises(ForbiddenRole):                                          # an owner exists: a second needs staff
+        await do_join(session_factory, clock, with_owner, role=Role.OWNER)
+    with pytest.raises(SeatsFull):                                              # and a plain member is still refused
+        await do_join(session_factory, clock, with_owner, role=Role.MEMBER)
+    ownerless = await seed(session_factory, seats=None, seat_status="incomplete", members=2)
+    _, m = await do_join(session_factory, clock, ownerless, role=Role.OWNER)    # no active owner: allowed
+    assert m.role == "owner"

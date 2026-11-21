@@ -19,7 +19,7 @@ from app.repositories.outbox_repository import OutboxRepository
 from app.telemetry.metrics import OUTBOX_BLOCKED_KEYS, OUTBOX_OLDEST_AGE, OUTBOX_PENDING, OUTBOX_PUBLISH_FAILURES
 from app.workers.backoff import backoff_seconds
 from app.workers.outbox_worker import OutboxRelay
-from tests.support.factories import NOW
+from tests.support.factories import NOW, make_outbox
 from tests.support.fakes import FakeProducer
 
 ORG = str(uuid.uuid4())
@@ -398,3 +398,77 @@ async def test_a_row_with_ten_failed_attempts_is_logged_as_stuck_without_its_pay
     assert user in text and "org.member.joined" in text and "ConnectionError" in text
     assert "org_type" not in text and "schema_version" not in text           # no payload
     await relay.unlock()
+
+
+# --- L1: stuck keys do not starve the batch ---
+async def test_stuck_keys_at_the_head_do_not_starve_a_healthy_key(engine, session_factory, clock):
+    """150 rows of 3 stuck keys come first; 10 rows of a healthy key come after them. One pass publishes the 10."""
+    stuck_keys = [str(uuid.uuid4()) for _ in range(3)]
+    healthy = str(uuid.uuid4())
+    rows_ = []
+    for k, key in enumerate(stuck_keys):
+        for i in range(50):
+            created = NOW + timedelta(seconds=k * 50 + i)
+            rows_.append(make_outbox(key=key, created_at=created,
+                                     next_attempt_at=NOW + timedelta(hours=1) if i == 0 else created,
+                                     attempts=3 if i == 0 else 0, last_error="ConnectionError: down" if i == 0 else None))
+    healthy_ids = []
+    for i in range(10):
+        row = make_outbox(key=healthy, created_at=NOW + timedelta(seconds=1000 + i), next_attempt_at=NOW)
+        healthy_ids.append(row.id)
+        rows_.append(row)
+    async with unit_of_work(session_factory) as s:
+        s.add_all(rows_)
+    producer = FakeProducer()
+    relay = relay_for(engine, session_factory, producer, clock)
+    await relay.try_lock()
+    clock.set(NOW + timedelta(seconds=2000))                      # the 150 stuck rows are older; their head is backing off
+    assert await relay.publish_batch() == 10
+    assert {m["key"] for m in producer.sent} == {healthy} and producer.calls == 10
+    pending = [r for r in await rows(session_factory) if r.published_at is None]
+    assert len(pending) == 150                                           # nothing of the stuck keys was touched or lost
+    await relay.unlock()
+
+
+async def test_without_the_exclusion_the_old_batch_would_have_been_all_stuck_keys(session_factory, clock):
+    """The query itself: with `now` it skips blocked keys, without it it returns the 100 oldest rows regardless."""
+    stuck = str(uuid.uuid4())
+    async with unit_of_work(session_factory) as s:
+        s.add(make_outbox(key=stuck, created_at=NOW, next_attempt_at=NOW + timedelta(hours=1), attempts=1))
+        for i in range(120):
+            s.add(make_outbox(key=stuck, created_at=NOW + timedelta(seconds=i + 1), next_attempt_at=NOW))
+        s.add(make_outbox(key="healthy", created_at=NOW + timedelta(seconds=500), next_attempt_at=NOW))
+    async with unit_of_work(session_factory) as s:
+        old_way = await OutboxRepository(s).oldest_unpublished(100)
+        new_way = await OutboxRepository(s).oldest_unpublished(100, NOW + timedelta(seconds=600))
+    assert {r.key for r in old_way} == {stuck} and len(old_way) == 100
+    assert [r.key for r in new_way] == ["healthy"]
+
+
+async def test_a_key_comes_back_once_its_stuck_row_is_due_again(session_factory):
+    key = str(uuid.uuid4())
+    async with unit_of_work(session_factory) as s:
+        s.add(make_outbox(key=key, created_at=NOW, next_attempt_at=NOW + timedelta(minutes=1), attempts=1))
+        s.add(make_outbox(key=key, created_at=NOW + timedelta(seconds=1), next_attempt_at=NOW))
+    async with unit_of_work(session_factory) as s:
+        repo = OutboxRepository(s)
+        assert await repo.oldest_unpublished(100, NOW + timedelta(seconds=30)) == []
+        assert len(await repo.oldest_unpublished(100, NOW + timedelta(minutes=1))) == 2     # due now: both, in order
+
+
+async def test_the_claim_query_does_not_scan_the_whole_table(session_factory):
+    """10,000 rows: the NOT EXISTS must use the partial index on unpublished rows, not a sequential scan."""
+    async with unit_of_work(session_factory) as s:
+        await s.execute(text(
+            "INSERT INTO outbox (id, topic, key, payload, created_at, next_attempt_at, published_at) "
+            "SELECT gen_random_uuid(), 'org.member.left', (i % 500)::text, '{}'::jsonb, "
+            "CAST(:n AS timestamptz) + (i || ' seconds')::interval, CAST(:n AS timestamptz) + (i || ' seconds')::interval, "
+            "CASE WHEN i < 9900 THEN CAST(:n AS timestamptz) ELSE NULL END FROM generate_series(1, 10000) i"),
+            {"n": NOW})
+        await s.execute(text("ANALYZE outbox"))
+        plan = "\n".join(r[0] for r in (await s.execute(text(
+            "EXPLAIN SELECT o.* FROM outbox o WHERE o.published_at IS NULL AND NOT EXISTS "
+            "(SELECT 1 FROM outbox b WHERE b.key = o.key AND b.published_at IS NULL "
+            "AND b.next_attempt_at > CAST(:now AS timestamptz)) ORDER BY o.created_at, o.id LIMIT 100 FOR UPDATE OF o"),
+            {"now": NOW + timedelta(seconds=9950)})).all())
+    assert "Seq Scan" not in plan and "ix_outbox_unpublished" in plan, plan

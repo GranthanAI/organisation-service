@@ -4,8 +4,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.outbox import OutboxEvent
 
@@ -37,16 +38,18 @@ class OutboxRepository:
         )
         return list((await self.session.execute(stmt)).scalars())
 
-    async def oldest_unpublished(self, limit: int = 100) -> list[OutboxEvent]:
-        """The oldest unpublished rows in publish order (created_at, id), locked FOR UPDATE. The relay publishes them
-        in this order and stops at the first row that is not due or fails, so it never skips ahead of a failed row."""
-        stmt = (
-            select(OutboxEvent)
-            .where(OutboxEvent.published_at.is_(None))
-            .order_by(OutboxEvent.created_at, OutboxEvent.id)
-            .limit(limit)
-            .with_for_update()
-        )
+    async def oldest_unpublished(self, limit: int = 100, now: datetime | None = None) -> list[OutboxEvent]:
+        """The oldest unpublished rows in publish order (created_at, id), locked FOR UPDATE.
+
+        With `now`, every row whose KEY has an unpublished row still backing off (next_attempt_at > now) is left out,
+        so the batch is always filled with keys that can be published and a few stuck keys at the head cannot starve
+        the rest. A key's rows come back again as soon as its stuck row is due for a retry."""
+        stmt = select(OutboxEvent).where(OutboxEvent.published_at.is_(None))
+        if now is not None:
+            blocker = aliased(OutboxEvent)
+            stmt = stmt.where(~exists().where(
+                blocker.key == OutboxEvent.key, blocker.published_at.is_(None), blocker.next_attempt_at > now))
+        stmt = stmt.order_by(OutboxEvent.created_at, OutboxEvent.id).limit(limit).with_for_update(of=OutboxEvent)
         return list((await self.session.execute(stmt)).scalars())
 
     async def stats(self, now: datetime) -> tuple[int, float]:

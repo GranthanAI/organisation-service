@@ -102,7 +102,7 @@ class OutboxRelay:
         blocked: set[str] = set()   # keys with a failed or backing-off row in this pass
         async with unit_of_work(self._factory) as session:
             repo = OutboxRepository(session)
-            for row in await repo.oldest_unpublished(self._batch):
+            for row in await repo.oldest_unpublished(self._batch, self._clock.now()):
                 if row.key in blocked:
                     continue   # an earlier row of this key is stuck: this one must wait for it (per-key order)
                 if row.next_attempt_at > self._clock.now():
