@@ -8,7 +8,8 @@ from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Development defaults that must never reach production.
-DEV_JWT_SECRET = "dev-only-jwt-secret-change-me-0123456789abcdef"
+# Must equal auth-service's dev secret (shared by conversation-service and api-gateway) so dev tokens verify.
+DEV_JWT_SECRET = "supersecretjwtkeyforauthservicelocaldvelopment12345"
 DEV_INTERNAL_TOKENS = "billing:dev-billing-token,gateway:dev-gateway-token"
 DEV_BILLING_TOKEN = "dev-org-service-token"
 DEV_DATABASE_URL = "postgresql+asyncpg://postgres:1234@127.0.0.1:5433/organisation_service_db"

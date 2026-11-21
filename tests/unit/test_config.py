@@ -83,3 +83,12 @@ def test_error_never_contains_secret_values():
 def test_seat_source_must_be_known():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, SEAT_SOURCE="nope")
+
+
+def test_shared_dev_jwt_secret_is_the_default_and_refused_in_production():
+    shared = "supersecretjwtkeyforauthservicelocaldvelopment12345"
+    assert DEV_JWT_SECRET == shared
+    assert Settings(_env_file=None).JWT_SECRET_KEY == shared
+    with pytest.raises(ValidationError) as exc:
+        make(JWT_SECRET_KEY=shared)
+    assert "JWT_SECRET_KEY" in str(exc.value) and shared not in str(exc.value)
