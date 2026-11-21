@@ -92,3 +92,15 @@ def test_shared_dev_jwt_secret_is_the_default_and_refused_in_production():
     with pytest.raises(ValidationError) as exc:
         make(JWT_SECRET_KEY=shared)
     assert "JWT_SECRET_KEY" in str(exc.value) and shared not in str(exc.value)
+
+
+def test_the_issuer_defaults_to_what_auth_service_signs_with_and_is_never_empty():
+    assert Settings(_env_file=None).JWT_ISSUER == "https://auth.granthan.com"
+    for env in ("development", "production"):
+        with pytest.raises(ValidationError) as exc:
+            Settings(_env_file=None, ENVIRONMENT=env, JWT_ISSUER="  ")
+        assert "JWT_ISSUER" in str(exc.value)
+
+
+def test_forwarded_allow_ips_defaults_to_loopback():
+    assert Settings(_env_file=None).FORWARDED_ALLOW_IPS == "127.0.0.1"

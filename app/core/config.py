@@ -10,6 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Development defaults that must never reach production.
 # Must equal auth-service's dev secret (shared by conversation-service and api-gateway) so dev tokens verify.
 DEV_JWT_SECRET = "supersecretjwtkeyforauthservicelocaldvelopment12345"
+# What auth-service always signs with (ACCESS_TOKEN_ISSUER) and api-gateway checks.
+DEV_JWT_ISSUER = "https://auth.granthan.com"
 DEV_INTERNAL_TOKENS = "billing:dev-billing-token,gateway:dev-gateway-token"
 DEV_BILLING_TOKEN = "dev-org-service-token"
 DEV_DATABASE_URL = "postgresql+asyncpg://postgres:1234@127.0.0.1:5433/organisation_service_db"
@@ -34,11 +36,13 @@ class Settings(BaseSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = "127.0.0.1:9092"
     KAFKA_CONSUMER_GROUP: str = "organisation-service"
     READY_PROBE_TIMEOUT_SECONDS: float = 2.0
+    # Proxies (IPs or CIDRs, comma-separated, or *) whose X-Forwarded-For is trusted for per-IP rate limits.
+    FORWARDED_ALLOW_IPS: str = "127.0.0.1"
 
     # --- Identity ---
     JWT_SECRET_KEY: str = DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
-    JWT_ISSUER: str = ""
+    JWT_ISSUER: str = DEV_JWT_ISSUER   # always verified; auth-service signs with this value
     INTERNAL_SERVICE_TOKENS: str = DEV_INTERNAL_TOKENS   # name:token,name:token
 
     # --- Billing ---
@@ -89,8 +93,6 @@ class Settings(BaseSettings):
 
         secret("JWT_SECRET_KEY", self.JWT_SECRET_KEY, DEV_JWT_SECRET)
         secret("BILLING_SERVICE_TOKEN", self.BILLING_SERVICE_TOKEN, DEV_BILLING_TOKEN)
-        if not self.JWT_ISSUER:
-            problems.append("JWT_ISSUER must be set so token issuers are verified")
         if not self.INTERNAL_SERVICE_TOKENS.strip() or self.INTERNAL_SERVICE_TOKENS == DEV_INTERNAL_TOKENS:
             problems.append("INTERNAL_SERVICE_TOKENS must be set to non-development tokens")
         else:
@@ -115,6 +117,8 @@ class Settings(BaseSettings):
     def _fail_fast_on_unsafe_production_config(self):
         if self.SEAT_SOURCE not in ("staff", "billing"):
             raise ValueError("SEAT_SOURCE must be staff or billing")
+        if not self.JWT_ISSUER.strip():
+            raise ValueError("JWT_ISSUER must be set: the issuer is always verified")
         if self.is_production:
             problems = self._production_problems()
             if problems:

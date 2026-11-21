@@ -1,4 +1,4 @@
-"""Fixtures for tests/postgres: ONE throwaway migrated database per test file, a clean schema per test."""
+"""Shared fixtures (used by tests/postgres and tests/api when they need a database): ONE throwaway migrated database per test file, a clean schema per test."""
 
 import pytest
 import pytest_asyncio
