@@ -19,6 +19,7 @@ from app.core.logging import logger
 from app.repositories.known_user_repository import KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
 from app.security.jwt import verify_jwt_token
+from app.security.known_user_sync import sync_known_user
 from app.security.models import CurrentUser, OrgContext
 from app.services import permission_rules
 from app.services.permission_rules import Action, Permission
@@ -54,6 +55,7 @@ async def authenticate_user(method: str, token: str | None, redis: Redis, sessio
     known = await KnownUserRepository(session).get(user.id)
     if known is not None and known.deleted_at is not None:
         raise Unauthenticated()
+    await sync_known_user(session, user.id, user.email, known)
     return user
 
 

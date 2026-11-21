@@ -40,6 +40,17 @@ class KnownUserRepository:
         )
         await self.session.execute(stmt)
 
+    async def sync_email(self, user_id: uuid.UUID, email: str, now: datetime) -> None:
+        """Create the row or refresh its email, from a login. Never touches full_name, email_verified_at, or a
+        deleted user's row."""
+        stmt = insert(KnownUser).values(user_id=user_id, email=email, updated_at=now)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[KnownUser.user_id],
+            set_={"email": stmt.excluded.email, "updated_at": now},
+            where=(KnownUser.deleted_at.is_(None) & (KnownUser.email != stmt.excluded.email)),
+        )
+        await self.session.execute(stmt)
+
     async def set_email_verified(self, user_id: uuid.UUID, email: str, verified_at: datetime,
                                  now: datetime | None = None) -> None:
         """Record that the email is verified. Keeps the EARLIEST verification time (LEAST ignores NULL), updates the

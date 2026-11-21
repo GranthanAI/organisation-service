@@ -45,3 +45,10 @@ async def session(session_factory):
     async with session_factory() as s:
         yield s
         await s.rollback()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_known_user_cache():
+    """The 'already in sync' cache is process memory; every test starts empty."""
+    from app.security.known_user_sync import clear_cache
+    clear_cache()
