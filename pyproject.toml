@@ -1,0 +1,44 @@
+[project]
+name = "organisation-service"
+version = "0.1.0"
+description = "GranthanAI organisation-service: organisations, memberships, invites, seats, policies"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "alembic",
+    "pydantic[email]",
+    "pydantic-settings",
+    "pyjwt[crypto]",
+    "redis",
+    "aiokafka",
+    "httpx",
+    "structlog",
+    "prometheus-client",
+    "python-multipart",
+    "dnspython",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "fakeredis",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.uv]
+package = false
