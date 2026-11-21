@@ -25,11 +25,14 @@ class AuditRepository:
         after: tuple[datetime, uuid.UUID] | None = None,
         limit: int = 50,
         action: str | None = None,
+        actor_id: uuid.UUID | None = None,
     ) -> list[AuditLog]:
         """Newest first, keyset on (at, id): pass the last row's (at, id) as `after`."""
         stmt = select(AuditLog).where(AuditLog.org_id == org_id)
         if action:
             stmt = stmt.where(AuditLog.action == action)
+        if actor_id:
+            stmt = stmt.where(AuditLog.actor_id == actor_id)
         if after:
             stmt = stmt.where(tuple_(AuditLog.at, AuditLog.id) < tuple_(*after))
         stmt = stmt.order_by(AuditLog.at.desc(), AuditLog.id.desc()).limit(limit)

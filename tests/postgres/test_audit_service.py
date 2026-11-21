@@ -175,4 +175,5 @@ def test_the_action_names_are_constants():
     assert constants.AUDIT_ACTIONS == {
         "member.joined", "member.left", "member.removed", "member.role_changed", "org.created", "org.status_changed",
         "seats.set", "invite.created", "invite.revoked", "domain.verified", "policy.changed", "org.owner_missing",
+        "org.details_changed", "org.ownership_transferred",
     }

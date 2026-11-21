@@ -65,8 +65,9 @@ Public routes verify the Bearer JWT (HS256, `JWT_SECRET_KEY`; claims `sub, email
 | internal | `GET /internal/orgs/{org_id}/members` -> `{user_ids}` (active only, oldest first, max 10,000, else 422) | **P5 built** |
 | admin `/admin/org/v1` | `POST /orgs`, `GET /orgs?q=&status=&cursor=`, `GET /orgs/{id}`, `POST /orgs/{id}/members`, `POST /orgs/{id}/seats`, `POST /orgs/{id}/suspend`, `/reactivate`, `/close`, `/extend-pilot`; every write needs `reason` (5-500 chars), an `Idempotency-Key` and staff `admin` (reads: staff `support` too) | **P5 built** |
 | admin | `POST /orgs/{id}/domains/{domain}/manual-verify` | P9 |
-| v1 `/org/v1` | `GET /me`; `GET/PATCH /orgs/{id}` | P6 |
-| v1 | `GET /orgs/{id}/members`, `PATCH/DELETE /orgs/{id}/members/{user_id}`, `POST /orgs/{id}/leave`, `POST /orgs/{id}/transfer-ownership`, `GET /orgs/{id}/audit` | P6 |
+| v1 `/org/v1` | `GET /me`; `GET/PATCH /orgs/{id}` | **P6 built** |
+| v1 | `GET /orgs/{id}/members`, `PATCH/DELETE /orgs/{id}/members/{user_id}`, `POST /orgs/{id}/leave`, `POST /orgs/{id}/transfer-ownership`, `GET /orgs/{id}/audit` | **P6 built** |
+| admin | `GET /admin/org/v1/orgs/{id}/members`, `GET /admin/org/v1/orgs/{id}/audit` (staff `support` may read) | **P6 built** |
 | v1 | `POST /orgs/{id}/invites`, `GET /orgs/{id}/invites`, `POST .../invites/{id}/resend`, `DELETE .../invites/{id}`, `GET /invites/preview?token=` (no JWT), `POST /invites/accept` | P7 |
 | v1 | `POST /orgs/{id}/invites/csv`, `GET /invite-batches/{id}`, `GET /invite-batches/{id}/errors.csv`, `POST/GET/DELETE /orgs/{id}/invite-links` | P8 |
 | v1 | `POST/GET /orgs/{id}/domains`, `POST .../domains/{domain}/verify`, `PATCH/DELETE .../domains/{domain}`, `GET .../join-requests`, `POST .../join-requests/{id}/approve\|decline` | P9 |
@@ -113,6 +114,44 @@ Writes need staff `admin`, an `Idempotency-Key` (route class `IdempotentRoute`) 
 ### Request plumbing added alongside
 - `known_users` is also filled from logged-in requests (`security/known_user_sync.py`): after a JWT passes, a missing row is created or a changed email updated, in its own short transaction, never for a deleted user, never setting `email_verified_at`, cached "in sync" per `(user_id, email)` for 10 minutes, and a failure is logged and never fails the request.
 - `scripts/create_topics.py` (`make topics`) creates the topics this service produces and its DLQ (3 partitions, replication factor 1 by default; idempotent).
+
+## 3c. Phase 6: the organisation API for owners and admins [built]
+
+All routes are on the router at `/org/v1` with `route_class=IdempotentRoute` (a POST needs an `Idempotency-Key`; PATCH and DELETE do not). Every route except `/me` uses `require_org_role(<action>)`: **a non-member gets 404, a member without the right gets 403** (`FORBIDDEN_ROLE`). Every write is audited with `actor_kind = user`.
+
+### The organisation status gate (`services/org_gate.py`, one helper used by every write)
+| Status | Writes | Reads |
+| --- | --- | --- |
+| `closed` | every write is refused: `409 ORG_INACTIVE`, leave included (the close job ends everyone) | allowed |
+| `suspended`, `pilot_expired` | role changes, removals, detail edits, transfer and leave are still allowed (an admin may tidy up) | allowed |
+| `pilot`, `active` | allowed | allowed |
+Reads are allowed in every status so members can see why access stopped. The system's own endings (the close job, user deletion) do not use the gate.
+
+### Routes
+| Route | Action (who) | What it does | Errors |
+| --- | --- | --- | --- |
+| `GET /org/v1/me` | any logged-in user | `{org: {id, name, slug, type, status, pilot_ends_at}, role, seats: {plan_code, status, used, bought, over_by}, features: {lock_modes, shared_modes_max, usage_reports, spend_cap, csv_invites, invite_links, domains}}`. `bought` is null for payg and while seats are `incomplete` or `ended`; `over_by` is 0 unless used > bought; `features` come from `core/plan_features.py` by the seat plan (no seat row means nothing paid is on). Two queries (membership + org + seat_state, and one count); timed as `org_internal_requests_seconds{route="/org/v1/me"}` | 404 not in an org |
+| `GET /org/v1/orgs/{org_id}` | `VIEW_ORG` (any member) | `{id, name, slug, type, status, legal_name, gstin, state_code, billing_email, pilot_ends_at, created_at}`; no audit, no seat details | 404 |
+| `PATCH /org/v1/orgs/{org_id}` | `EDIT_DETAILS` (owner, admin) | any of `name` (3-120), `legal_name`, `gstin`, `state_code`, `billing_email`. GSTIN and state-code checks are `org_service.validate_gstin_and_state` (the one function create also uses); when both are set the first two GSTIN digits must equal `state_code`. The slug never changes. Audit `org.details_changed` lists only the changed fields, old and new; nothing changed means no audit. An empty body is 422 | 403, 404, 409 `ORG_INACTIVE`, 422 |
+| `GET /org/v1/orgs/{org_id}/members?cursor=&limit=&q=&role=` | `VIEW_MEMBERS` (owner, admin) | active members, oldest first, keyset on `(joined_at, id)`, `limit` default 50 max 100, opaque cursor, `q` 2-100 characters matching email or name (case-insensitive), `role` filter; rows `{user_id, name, email, role, source, joined_at}` (name and email null if the user is not in `known_users`); `next_cursor` null on the last page | 403, 404, 422 (limit, cursor, q, role) |
+| `PATCH /org/v1/orgs/{org_id}/members/{user_id}` `{role}` | `CHANGE_ROLE` (owner) | `membership_service.change_role`; `admin` or `member` only. Audit `member.role_changed {from, to}`. **No Kafka event** (billing does not read the role). The same role is a no-op 200 with no audit | 403 (your own role; a non-owner), 404, 409 `ORG_INACTIVE`, 422 (set `owner`, or change an owner: use transfer) |
+| `DELETE /org/v1/orgs/{org_id}/members/{user_id}` | `REMOVE_MEMBER` (owner any role; admin members only) | `ctx.check_target(target role)`, then `membership_service.end(reason=removed)` which emits `org.member.left`; answers 204 | 403, 404, 409 `ORG_INACTIVE`, 422 (yourself: use leave) |
+| `POST /org/v1/orgs/{org_id}/leave` | `LEAVE` (any member) | `end(reason=left)`; 200 `{left: true}` | 404, 409 `LAST_OWNER`, 409 `ORG_INACTIVE` |
+| `POST /org/v1/orgs/{org_id}/transfer-ownership` `{to_user_id}` | `TRANSFER_OWNERSHIP` (owner) | `membership_service.transfer_ownership`: the target must be an active ADMIN of this org; in one transaction the target becomes owner and the caller becomes admin; audit `member.role_changed` for both plus `org.ownership_transferred`; 200 `{owner_id, previous_owner_id, previous_owner_role}` | 403, 404, 409 `ORG_INACTIVE`, 422 (yourself, a member, a non-member, someone who left) |
+| `GET /org/v1/orgs/{org_id}/audit?cursor=&limit=&action=&actor_id=` | `VIEW_AUDIT` (owner, admin) | newest first, keyset on `(at, id)`, `limit` default 50 max 100; rows `{id, action, actor_id, actor_kind, target_type, target_id, details, reason, at}`. **For the organisation's view `reason` is shown only on rows with `actor_kind = user` (staff and system reasons are internal), and `details` keys starting with `staff_` are dropped.** | 403, 404, 422 |
+| `GET /admin/org/v1/orgs/{org_id}/members` and `/audit` | staff `support` or `admin` | the same service functions and pagination; the audit view shows everything (reason, `staff_` details) | 403 non-staff, 404 unknown org |
+
+### Lock order (every use case that touches membership rows)
+1. the organisation's **`seat_state` row** `FOR UPDATE` (or the `organisations` row if it has none): `membership_service.lock_org`. Join, end, change_role, transfer_ownership, remove and leave all take it first, so they queue on one row;
+2. then **memberships**, locked `FOR UPDATE` in **id order** (`MembershipRepository.lock_active`): a use case that needs the caller's row and the target's row locks both together, so two of them never wait on each other in opposite orders;
+3. the caller's role used for the permission check is the one read under that lock (a concurrent transfer may have changed it since the request began), carried by `OrgContext` copy with the fresh role.
+`tests/postgres/test_member_concurrency.py` runs transfer and remove (and change_role) at the same time without a deadlock, and two admins removing the same member give one success and one 404.
+
+### `membership_service.change_role(session, org_id, user_id, new_role, actor: OrgContext)`
+Checks in order: the org is not closed; `new_role` is not owner (422); the caller is not the target (403); the target is an active member (404); the caller may `CHANGE_ROLE` with their current role; `ctx.check_target(target role)`; the target is not an owner (422); `new_role` differs (else no-op, no audit); `membership_rules.check_role_change`. Then sets the role and audits `member.role_changed {user_id, from, to}`.
+
+### `membership_service.transfer_ownership(session, org_id, to_user_id, actor: OrgContext)`
+Lock order as above; the caller must still be the owner; `membership_rules.plan_transfer` requires the target to be an active admin (`InvalidTransferTarget`, 422); swaps the roles; audits `member.role_changed` for both and `org.ownership_transferred {from_user_id, to_user_id}`. There is always exactly one owner afterwards.
 
 ## 4. Events and workers [P4: built]
 
