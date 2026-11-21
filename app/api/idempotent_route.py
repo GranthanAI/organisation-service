@@ -22,6 +22,7 @@ from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.deps import get_db_session, get_redis_client
+from app.api.route_template import route_template
 from app.core.constants import IDEMPOTENCY_HEADER, IDEMPOTENCY_REPLAY_HEADER
 from app.core.exceptions import DomainError
 from app.middleware.exception_handler import domain_error_response, http_error_response, validation_response
@@ -56,7 +57,6 @@ def _json_body(response: Response) -> Any:
 class IdempotentRoute(APIRoute):
     def get_route_handler(self) -> Callable:
         original = super().get_route_handler()
-        route = self.path_format   # the template ("/org/v1/orgs/{org_id}/invites"), not the concrete path
 
         async def handler(request: Request) -> Response:
             if request.method != "POST":
@@ -64,6 +64,7 @@ class IdempotentRoute(APIRoute):
             token = bearer_token(request)
             if token is None:
                 return await original(request)   # no credentials: the route's own dependency answers 401
+            route = route_template(request)   # the template ("/org/v1/orgs/{org_id}/invites"), not the concrete path
             actor = (await _authenticate(request, token)).id
             key = validate_key(request.headers.get(IDEMPOTENCY_HEADER))
             service = _service(request)
