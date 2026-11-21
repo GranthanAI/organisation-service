@@ -8,14 +8,20 @@ from fastapi import APIRouter, Depends
 from app.api.admin import orgs as admin_orgs
 from app.api.internal import memberships, orgs, ping
 from app.api.internal.timing import time_request
-from app.api.v1 import health
+from app.api.v1 import audit, health, me, members
+from app.api.v1 import orgs as v1_orgs
 from app.security.service_tokens import require_service
 
 api_router = APIRouter()
 api_router.include_router(health.router)
 
-# Public routes, reached through api-gateway as /org/v1/*. Empty until Phase 6.
+# Public routes, reached through api-gateway as /org/v1/*. Every router here uses IdempotentRoute (POSTs need an
+# Idempotency-Key).
 v1_router = APIRouter(prefix="/org/v1")
+v1_router.include_router(me.router)
+v1_router.include_router(v1_orgs.router)
+v1_router.include_router(members.router)
+v1_router.include_router(audit.router)
 api_router.include_router(v1_router)
 
 # Service-to-service routes. Never routed by the gateway; every one needs a service token.

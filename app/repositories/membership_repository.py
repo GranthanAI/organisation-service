@@ -89,3 +89,15 @@ class MembershipRepository:
             stmt = stmt.where(tuple_(Membership.joined_at, Membership.id) > tuple_(*after))
         stmt = stmt.order_by(Membership.joined_at, Membership.id).limit(limit)
         return [(m, u) for m, u in (await self.session.execute(stmt)).all()]
+
+    async def lock_active(self, org_id: uuid.UUID, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, Membership]:
+        """The ACTIVE memberships of these users in this organisation, locked FOR UPDATE in id order (so two
+        transactions locking the same pair always take the rows in the same order). Lock order everywhere: the
+        seat_state row first, then memberships."""
+        stmt = (
+            select(Membership)
+            .where(Membership.org_id == org_id, Membership.user_id.in_(user_ids), Membership.status == ACTIVE)
+            .order_by(Membership.id)
+            .with_for_update()
+        )
+        return {m.user_id: m for m in (await self.session.execute(stmt)).scalars()}

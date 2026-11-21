@@ -27,10 +27,12 @@ from app.schemas.admin import (
     SeatStateOut,
     SetSeatsIn,
 )
+from app.schemas.org_v1 import AuditPageOut, MemberPageOut
 from app.security.dependencies import require_staff
 from app.security.models import CurrentUser
-from app.services import org_service, seat_service
+from app.services import audit_query_service, org_member_service, org_service, seat_service
 from app.services.permission_rules import Action
+from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
 router = APIRouter(prefix="/orgs", tags=["Admin: organisations"], route_class=IdempotentRoute)
 
@@ -113,3 +115,33 @@ async def get_org(org_id: uuid.UUID, _actor: CurrentUser = Reader, session=Depen
     return OrgDetailOut(**org_out(org).model_dump(),
                         seat_state=SeatStateOut.model_validate(seat, from_attributes=True) if seat else None,
                         active_count=active)
+
+
+@router.get("/{org_id}/members", response_model=MemberPageOut)
+async def staff_list_members(
+    org_id: uuid.UUID,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    q: str | None = Query(default=None, min_length=2, max_length=100),
+    role: str | None = None,
+    _actor: CurrentUser = Reader,
+    session=Depends(get_db_session),
+):
+    """The same list and pagination as /org/v1/orgs/{id}/members, for staff (support may read)."""
+    await org_service.org_detail(session, org_id)             # 404 for an unknown organisation
+    return await org_member_service.list_members(session, org_id, cursor, limit, q, role)
+
+
+@router.get("/{org_id}/audit", response_model=AuditPageOut)
+async def staff_audit(
+    org_id: uuid.UUID,
+    cursor: str | None = None,
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    action: str | None = Query(default=None, max_length=100),
+    actor_id: uuid.UUID | None = None,
+    _actor: CurrentUser = Reader,
+    session=Depends(get_db_session),
+):
+    """The whole audit log, staff reasons and staff_ details included."""
+    await org_service.org_detail(session, org_id)
+    return await audit_query_service.list_audit(session, org_id, cursor, limit, action, actor_id, staff_view=True)
