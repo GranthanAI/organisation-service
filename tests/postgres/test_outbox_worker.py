@@ -16,7 +16,7 @@ from app.events.schemas import OrgMemberJoined, OrgMemberLeft, OrgPilotEnding
 from app.middleware.correlation import _correlation_id_ctx
 from app.models.outbox import OutboxEvent
 from app.repositories.outbox_repository import OutboxRepository
-from app.telemetry.metrics import OUTBOX_OLDEST_AGE, OUTBOX_PENDING, OUTBOX_PUBLISH_FAILURES
+from app.telemetry.metrics import OUTBOX_BLOCKED_KEYS, OUTBOX_OLDEST_AGE, OUTBOX_PENDING, OUTBOX_PUBLISH_FAILURES
 from app.workers.backoff import backoff_seconds
 from app.workers.outbox_worker import OutboxRelay
 from tests.support.factories import NOW
@@ -165,14 +165,14 @@ async def test_the_batch_size_limits_one_batch(engine, session_factory, clock):
 
 
 # --- failure, backoff, no skipping ahead ---
-async def test_a_failure_stops_the_batch_and_sets_backoff_without_skipping_ahead(engine, session_factory, clock):
+async def test_a_failure_blocks_that_key_and_sets_backoff_without_skipping_ahead_within_it(engine, session_factory, clock):
     ids = await queue(session_factory, clock, 4)
     producer = FakeProducer(fail_on={2})                       # the second send fails once
     relay = relay_for(engine, session_factory, producer, clock)
     await relay.try_lock()
     failures_before = OUTBOX_PUBLISH_FAILURES._value.get()
 
-    assert await relay.publish_batch() == 1                    # row 1 went, row 2 failed, rows 3 and 4 were NOT tried
+    assert await relay.publish_batch() == 1                    # row 1 went, row 2 failed, rows 3 and 4 (same key) wait
     assert producer.calls == 2 and [m["value"]["event_id"] for m in producer.sent] == ids[:1]
     first, second, third, fourth = await rows(session_factory)
     assert first.published_at is not None
@@ -317,3 +317,84 @@ async def test_repository_stats_and_cleanup(session_factory, clock):
         assert (await repo.stats(NOW))[0] == 1
         assert await repo.delete_published_before(NOW + timedelta(seconds=1)) == 2
     assert len(await rows(session_factory)) == 1
+
+
+# --- per-key blocking (K1) ---
+async def queue_keys(session_factory, clock, plan: list[str]) -> dict[str, list[str]]:
+    """One member event per entry of `plan` (a user key), a second apart; returns event ids per key."""
+    ids: dict[str, list[str]] = {}
+    for i, user in enumerate(plan):
+        async with unit_of_work(session_factory) as s:
+            event = joined(user, clock) if i % 2 == 0 else left(user, clock)
+            topic = topics.ORG_MEMBER_JOINED if i % 2 == 0 else topics.ORG_MEMBER_LEFT
+            await enqueue(s, topic, user, event, clock)
+            ids.setdefault(user, []).append(event.event_id)
+        clock.advance(seconds=1)
+    return ids
+
+
+async def test_a_failure_on_key_a_does_not_stop_key_b(engine, session_factory, clock):
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    ids = await queue_keys(session_factory, clock, [a, b, a, b])   # a1 b1 a2 b2
+    producer = FakeProducer(fail_on={1})                           # the very first send (a1) fails
+    relay = relay_for(engine, session_factory, producer, clock)
+    await relay.try_lock()
+    assert await relay.publish_batch() == 2
+    assert [m["value"]["event_id"] for m in producer.sent] == ids[b]       # b1, b2 went; a1 failed; a2 waited
+    by_key = {}
+    for r in await rows(session_factory):
+        by_key.setdefault(r.key, []).append(r)
+    assert [r.published_at is None for r in by_key[a]] == [True, True]
+    assert [r.published_at is not None for r in by_key[b]] == [True, True]
+    assert by_key[a][0].attempts == 1 and by_key[a][1].attempts == 0        # a2 was never tried
+    await relay.unlock()
+
+
+async def test_a_later_row_of_key_a_waits_for_the_earlier_one(engine, session_factory, clock):
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    ids = await queue_keys(session_factory, clock, [a, a, b])
+    producer = FakeProducer(fail_on={1})
+    relay = relay_for(engine, session_factory, producer, clock)
+    await relay.try_lock()
+    await relay.publish_batch()
+    assert [m["value"]["event_id"] for m in producer.sent] == ids[b]
+    assert await relay.publish_batch() == 0                    # a1 still backing off, so a2 may not pass it
+    clock.advance(seconds=1)
+    assert await relay.publish_batch() == 2
+    assert [m["value"]["event_id"] for m in producer.sent] == ids[b] + ids[a]      # a1 then a2, in order
+    await relay.unlock()
+
+
+async def test_the_blocked_keys_gauge(engine, session_factory, clock):
+    a, b, c = (str(uuid.uuid4()) for _ in range(3))
+    await queue_keys(session_factory, clock, [a, b, c, a, b])
+    producer = FakeProducer()
+    producer.fail_always = True
+    relay = relay_for(engine, session_factory, producer, clock)
+    await relay.try_lock()
+    await relay.publish_batch()
+    assert OUTBOX_BLOCKED_KEYS._value.get() == 3 and producer.calls == 3        # each key tried once, then blocked
+    producer.fail_always = False
+    clock.advance(seconds=1)
+    await relay.publish_batch()
+    assert OUTBOX_BLOCKED_KEYS._value.get() == 0
+    await relay.unlock()
+
+
+async def test_a_row_with_ten_failed_attempts_is_logged_as_stuck_without_its_payload(engine, session_factory, clock,
+                                                                                    caplog):
+    user = str(uuid.uuid4())
+    await queue_keys(session_factory, clock, [user])
+    producer = FakeProducer()
+    producer.fail_always = True
+    relay = relay_for(engine, session_factory, producer, clock)
+    await relay.try_lock()
+    for _ in range(10):
+        await relay.publish_batch()
+        clock.advance(minutes=11)
+    stuck = [r for r in caplog.records if "outbox row is stuck" in r.getMessage()]
+    assert len(stuck) == 1                                                   # only from the 10th attempt
+    text = stuck[0].getMessage()
+    assert user in text and "org.member.joined" in text and "ConnectionError" in text
+    assert "org_type" not in text and "schema_version" not in text           # no payload
+    await relay.unlock()

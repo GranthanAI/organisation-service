@@ -5,6 +5,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_late
 # --- outbox relay ---
 OUTBOX_PENDING = Gauge("org_outbox_pending", "Outbox rows not yet published")
 OUTBOX_OLDEST_AGE = Gauge("org_outbox_oldest_age_seconds", "Age of the oldest unpublished outbox row (0 when empty)")
+OUTBOX_BLOCKED_KEYS = Gauge("org_outbox_blocked_keys", "Keys with a failed or backing-off outbox row in the last pass")
 OUTBOX_PUBLISH_FAILURES = Counter("org_outbox_publish_failures", "Outbox publishes that failed (counter, _total)")
 
 # --- jobs ---

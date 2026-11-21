@@ -5,9 +5,11 @@ out of order (a `left` before its `joined`). The relay therefore holds a Postgre
 (`pg_try_advisory_lock(OUTBOX_LOCK_ID)`) on its own connection while it relays; other instances idle and retry every
 5 s, which also makes them take over within seconds if the leader dies (its connection closes, the lock goes).
 
-Each batch takes the oldest unpublished rows (created_at, id), publishes them in that order, and stops at the first
-row that is not due yet or that fails: the failure is recorded with exponential backoff (1 s up to 10 min) and later
-rows are NOT published ahead of it. `published_at` is set only after the broker acked.
+Each batch takes the oldest unpublished rows (created_at, id) and publishes them in that order. When a row fails (or
+is still backing off), every LATER row with the same key is skipped in this pass, but other keys keep going: per-key
+order is kept and one stuck key does not block the rest. The failure is recorded with exponential backoff (1 s up to
+10 min); from the 10th attempt a "stuck" warning is logged (topic, key, attempts, last_error; never the payload).
+`published_at` is set only after the broker acked.
 """
 
 import asyncio
@@ -22,11 +24,12 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.db.session import unit_of_work
 from app.repositories.outbox_repository import OutboxRepository
-from app.telemetry.metrics import OUTBOX_OLDEST_AGE, OUTBOX_PENDING, OUTBOX_PUBLISH_FAILURES
+from app.telemetry.metrics import OUTBOX_BLOCKED_KEYS, OUTBOX_OLDEST_AGE, OUTBOX_PENDING, OUTBOX_PUBLISH_FAILURES
 from app.workers.backoff import backoff_seconds, sleep_or_stop
 
 OUTBOX_LOCK_ID = 7_240_001      # arbitrary, unique to this service's relay (advisory locks are per database)
 LOCK_RETRY_SECONDS = 5.0
+STUCK_ATTEMPTS = 10      # from this many failed attempts a row is logged as stuck
 
 
 class OutboxRelay:
@@ -96,11 +99,15 @@ class OutboxRelay:
         if not await self._still_leader():
             return 0
         published = 0
+        blocked: set[str] = set()   # keys with a failed or backing-off row in this pass
         async with unit_of_work(self._factory) as session:
             repo = OutboxRepository(session)
             for row in await repo.oldest_unpublished(self._batch):
+                if row.key in blocked:
+                    continue   # an earlier row of this key is stuck: this one must wait for it (per-key order)
                 if row.next_attempt_at > self._clock.now():
-                    break   # the head of the queue is waiting out a backoff: nothing behind it may go first
+                    blocked.add(row.key)   # still backing off; other keys carry on
+                    continue
                 try:
                     await self._producer.send(row.topic, row.key, row.payload, row.correlation_id)
                 except Exception as exc:
@@ -108,13 +115,18 @@ class OutboxRelay:
                     row.last_error = f"{type(exc).__name__}: {exc}"[:500]
                     row.next_attempt_at = self._clock.now() + timedelta(seconds=backoff_seconds(row.attempts))
                     OUTBOX_PUBLISH_FAILURES.inc()
+                    blocked.add(row.key)
                     logger.warning("outbox publish failed", topic=row.topic, attempts=row.attempts,
                                    error=type(exc).__name__)
-                    break
+                    if row.attempts >= STUCK_ATTEMPTS:   # topic, key, attempts and error only: never the payload
+                        logger.warning("outbox row is stuck", topic=row.topic, key=row.key, attempts=row.attempts,
+                                       last_error=row.last_error)
+                    continue
                 row.published_at = self._clock.now()   # only after the broker acked
                 published += 1
             await session.flush()   # autoflush is off: the stats must see this batch
             pending, oldest_age = await repo.stats(self._clock.now())
+        OUTBOX_BLOCKED_KEYS.set(len(blocked))
         OUTBOX_PENDING.set(pending)
         OUTBOX_OLDEST_AGE.set(oldest_age)
         return published
