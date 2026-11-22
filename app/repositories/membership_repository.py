@@ -101,3 +101,12 @@ class MembershipRepository:
             .with_for_update()
         )
         return {m.user_id: m for m in (await self.session.execute(stmt)).scalars()}
+
+    async def active_orgs_for_users(self, user_ids: "list[uuid.UUID]") -> "dict[uuid.UUID, uuid.UUID]":
+        """user_id -> org_id of the user's active membership, for many users at once."""
+        found: dict[uuid.UUID, uuid.UUID] = {}
+        for i in range(0, len(user_ids), 1000):
+            stmt = select(Membership.user_id, Membership.org_id).where(
+                Membership.user_id.in_(user_ids[i:i + 1000]), Membership.status == ACTIVE)
+            found.update({user_id: org_id for user_id, org_id in (await self.session.execute(stmt)).all()})
+        return found

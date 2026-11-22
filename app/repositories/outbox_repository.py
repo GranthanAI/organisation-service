@@ -61,3 +61,7 @@ class OutboxRepository:
     async def delete_published_before(self, cutoff: datetime) -> int:
         result = await self.session.execute(delete(OutboxEvent).where(OutboxEvent.published_at < cutoff))
         return result.rowcount
+
+    async def add_many(self, events: list[OutboxEvent]) -> None:
+        self.session.add_all(events)
+        await self.session.flush()

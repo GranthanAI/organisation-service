@@ -84,3 +84,13 @@ class KnownUserRepository:
             user.deleted_at = deleted_at
             user.updated_at = deleted_at
             await self.session.flush()
+
+    async def get_by_emails(self, emails: Collection[str]) -> dict[str, KnownUser]:
+        """The newest known user for each email (lower-case keys), in bulk (get_by_email for many)."""
+        found: dict[str, KnownUser] = {}
+        wanted = list(emails)
+        for i in range(0, len(wanted), 1000):
+            stmt = select(KnownUser).where(KnownUser.email.in_(wanted[i:i + 1000])).order_by(KnownUser.updated_at)
+            for user in (await self.session.execute(stmt)).scalars():
+                found[str(user.email).lower()] = user          # ordered oldest first, so the newest wins
+        return found

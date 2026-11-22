@@ -19,6 +19,7 @@ class InviteBatch(Base):
     rows_total: Mapped[int] = mapped_column(Integer, default=0)
     rows_ok: Mapped[int] = mapped_column(Integer, default=0)
     rows_failed: Mapped[int] = mapped_column(Integer, default=0)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(Text)
     errors: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -50,5 +51,6 @@ class Invite(Base):
     resend_count: Mapped[int] = mapped_column(Integer, default=0)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invitee_name: Mapped[str | None] = mapped_column(Text)      # the CSV name column; purged with the email
     created_by: Mapped[uuid.UUID | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

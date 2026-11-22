@@ -31,3 +31,21 @@ async def enqueue(session: AsyncSession, topic: str, key: str, event: ProducedEv
     row = OutboxEvent(id=uuid7(), topic=topic, key=key, payload=payload, created_at=now, next_attempt_at=now,
                       correlation_id=get_correlation_id() or None)
     return await OutboxRepository(session).add(row)
+
+
+async def enqueue_many(session: AsyncSession, topic: str, items: "list[tuple[str, ProducedEvent]]",
+                       clock: Clock = system_clock) -> None:
+    """`enqueue` for a batch (a CSV upload makes thousands): the same checks per event, one flush for all of them."""
+    if topic not in PRODUCED:
+        raise ValueError(f"{topic!r} is not a topic this service produces")
+    model, key_field = PRODUCED[topic]
+    now, correlation_id, rows = clock.now(), get_correlation_id() or None, []
+    for key, event in items:
+        if type(event) is not model:
+            raise ValueError(f"{topic} carries {model.__name__}, not {type(event).__name__}")
+        payload = model.model_validate(event.model_dump()).model_dump(mode="json")
+        if key != payload[key_field]:
+            raise ValueError(f"{topic} must be keyed by {key_field}")
+        rows.append(OutboxEvent(id=uuid7(), topic=topic, key=key, payload=payload, created_at=now, next_attempt_at=now,
+                                correlation_id=correlation_id))
+    await OutboxRepository(session).add_many(rows)

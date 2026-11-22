@@ -51,3 +51,7 @@ class JobRepository:
         """Remove the open (not done) job with this dedupe key, if any."""
         result = await self.session.execute(delete(Job).where(Job.dedupe_key == dedupe_key, Job.done_at.is_(None)))
         return result.rowcount
+
+    async def add_many(self, jobs: list[Job]) -> None:
+        self.session.add_all(jobs)
+        await self.session.flush()

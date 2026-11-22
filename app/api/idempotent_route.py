@@ -54,6 +54,18 @@ def _json_body(response: Response) -> Any:
     return json.loads(bytes(response.body))   # raises for streaming or non-JSON responses
 
 
+async def _hashable_body(request: Request) -> bytes:
+    """The body to fingerprint. A multipart upload carries a random boundary that changes on every send, so a client
+    retrying the same file with the same key would look like a different request: the boundary is replaced by a constant."""
+    body = await request.body()
+    content_type = request.headers.get("content-type", "")
+    if content_type.lower().startswith("multipart/form-data") and "boundary=" in content_type:
+        boundary = content_type.split("boundary=", 1)[1].split(";")[0].strip().strip('"')
+        if boundary:
+            return body.replace(boundary.encode(), b"BOUNDARY")
+    return body
+
+
 class IdempotentRoute(APIRoute):
     def get_route_handler(self) -> Callable:
         original = super().get_route_handler()
@@ -68,7 +80,7 @@ class IdempotentRoute(APIRoute):
             actor = (await _authenticate(request, token)).id
             key = validate_key(request.headers.get(IDEMPOTENCY_HEADER))
             service = _service(request)
-            stored = await service.begin(actor, route, key, request_hash(await request.body()))
+            stored = await service.begin(actor, route, key, request_hash(await _hashable_body(request)))
             if stored is not None:
                 return JSONResponse(stored.body, status_code=stored.status_code,
                                     headers={IDEMPOTENCY_REPLAY_HEADER: "true"})
