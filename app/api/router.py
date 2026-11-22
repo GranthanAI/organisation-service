@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from app.api.admin import orgs as admin_orgs
 from app.api.internal import memberships, orgs, ping
 from app.api.internal.timing import time_request
-from app.api.v1 import audit, domains, health, invites, me, members, policies
+from app.api.v1 import audit, domains, health, invites, me, members, policies, usage
 from app.api.v1 import orgs as v1_orgs
 from app.security.service_tokens import require_service
 
@@ -35,6 +35,7 @@ v1_router.include_router(invites.public_router)    # GET /org/v1/invites/preview
 v1_router.include_router(invites.router)
 v1_router.include_router(domains.router)
 v1_router.include_router(policies.router)
+v1_router.include_router(usage.router)
 api_router.include_router(v1_router)
 
 # Staff routes, reached through api-gateway as /admin/org/v1/*: GranthanAI staff only.

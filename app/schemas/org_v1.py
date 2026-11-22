@@ -1,7 +1,7 @@
 """Request and response bodies of /org/v1 (what an organisation's own members and admins see)."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -352,3 +352,29 @@ class JoinRequestPageOut(BaseModel):
 class JoinRequestDecisionOut(BaseModel):
     id: uuid.UUID
     status: str
+
+
+# ---- usage report (Phase 10)
+class UsageTotalsOut(BaseModel):
+    messages: int
+    billable_units: int
+    by_model_group: dict[str, dict[str, int]]
+
+
+class UsageMemberOut(BaseModel):
+    user_id: uuid.UUID
+    name: str | None
+    email: str | None
+    role: str | None
+    messages: int
+    billable_units: int
+    by_model_group: dict[str, dict[str, int]]
+
+
+class UsageOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: date = Field(alias="from")
+    to: date
+    totals: UsageTotalsOut
+    members: list[UsageMemberOut]

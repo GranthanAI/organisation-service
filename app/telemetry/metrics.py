@@ -25,6 +25,20 @@ DOMAIN_CHECKS = Counter("org_domain_checks", "DNS checks of a domain TXT record 
 # --- event loop ---
 EVENT_LOOP_LAG = Gauge("org_event_loop_lag_seconds", "How late the event-loop monitor woke up (0 when the loop is idle)")
 
+# --- membership and invites ---
+JOINS = Counter("org_joins", "Join attempts by source and result (ok, or the refusal code in lower case) (counter, _total)",
+                ["source", "result"])
+SEAT_FULL = Counter("org_seat_full", "Joins refused because the organisation is full (SEATS_FULL or PILOT_FULL) (counter, _total)")
+INVITES_CREATED = Counter("org_invites_created", "Invites created, by kind (email, csv, link) (counter, _total)", ["kind"])
+
+# --- consumer ---
+CONSUMER_LAG = Gauge("org_consumer_lag", "Messages the consumer is behind on user-events and user.deleted (sum over partitions)")
+DLQ_MESSAGES = Counter("org_dlq_messages", "Messages sent to organisation.dlq (counter, _total)")
+
+# --- billing-service calls ---
+BILLING_REQUESTS = Histogram("org_billing_requests_seconds", "Duration of calls to billing-service", ["route", "result"],
+                             buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0))
+
 # --- workers ---
 WORKER_UP = Gauge("org_worker_up", "1 while a background worker is running, 0 when it is down or restarting", ["worker"])
 

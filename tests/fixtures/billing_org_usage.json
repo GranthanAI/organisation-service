@@ -1,0 +1,15 @@
+{
+  "_source": "billing-service src/billing/api/rest/orgs.py org_usage(): _json({org_id, from, to, rows}); rows come from app/org_billing.py usage_report() = [{user_id, **daily_usage row}], and daily_usage (adapters/db/repos/admin.py) selects day, model_group (fast|smart|best|ultra), messages, billable_units from billing.usage_daily. Dates are IST days. Copied from reading that code, not invented: change it only when billing changes.",
+  "request": {"method": "GET", "path": "/internal/orgs/{org_id}/usage", "query": {"from": "2026-11-01", "to": "2026-11-07"}, "auth": "Authorization: Bearer <ORG_SERVICE_TOKEN>"},
+  "response": {
+    "org_id": "01a20300-0000-7000-8000-000000000001",
+    "from": "2026-11-01",
+    "to": "2026-11-07",
+    "rows": [
+      {"user_id": "01a20300-0000-7000-8000-0000000000a1", "day": "2026-11-02", "model_group": "fast", "messages": 12, "billable_units": 12},
+      {"user_id": "01a20300-0000-7000-8000-0000000000a1", "day": "2026-11-03", "model_group": "fast", "messages": 8, "billable_units": 8},
+      {"user_id": "01a20300-0000-7000-8000-0000000000a1", "day": "2026-11-03", "model_group": "smart", "messages": 3, "billable_units": 9},
+      {"user_id": "01a20300-0000-7000-8000-0000000000b2", "day": "2026-11-05", "model_group": "best", "messages": 40, "billable_units": 200}
+    ]
+  }
+}
