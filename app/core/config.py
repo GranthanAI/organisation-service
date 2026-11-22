@@ -13,7 +13,7 @@ DEV_JWT_SECRET = "supersecretjwtkeyforauthservicelocaldvelopment12345"
 # What auth-service always signs with (ACCESS_TOKEN_ISSUER) and api-gateway checks.
 DEV_JWT_ISSUER = "https://auth.granthan.com"
 DEV_INTERNAL_TOKENS = "billing:dev-billing-token,gateway:dev-gateway-token"
-DEV_BILLING_TOKEN = "dev-org-service-token"
+DEV_BILLING_TOKEN = "dev-billing-token"
 DEV_DATABASE_URL = "postgresql+asyncpg://postgres:1234@127.0.0.1:5433/organisation_service_db"
 DEV_APP_BASE_URL = "http://127.0.0.1:3000"
 DEV_INVITE_TOKEN_SECRET = "dev-invite-token-secret-change-me-0123456789abcdef"
