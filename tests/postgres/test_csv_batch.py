@@ -2,6 +2,7 @@
 
 import uuid
 from collections import Counter
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,7 @@ async def upload_fixture(session_factory, ctx, clock):
 async def progress(session_factory, batch_id, clock):
     async with session_factory() as s:
         batch = await s.get(InviteBatch, batch_id)
-        return batch, await csv_service.progress(s, batch, clock.now())
+        return batch, (await csv_service.progress(s, batch, clock.now()))[:2]
 
 
 async def finish(session_factory, clock):
@@ -116,22 +117,65 @@ async def test_sending_finishes_and_the_batch_becomes_done(session_factory, cloc
     assert (await progress(session_factory, report.batch_id, clock))[0].finished_at == NOW
 
 
-async def test_a_revoked_or_expired_invite_does_not_hold_the_batch_open(session_factory, clock, mail):
-    org, ctx = await seed(session_factory)
+async def counts(session_factory, batch_id, clock):
+    async with session_factory() as s:
+        batch = await s.get(InviteBatch, batch_id)
+        return batch, await csv_service.progress(s, batch, clock.now())
+
+
+async def small_upload(session_factory, ctx, clock, n=3):
+    emails = "".join(f"{c}@amity.edu\n" for c in "abcdefgh"[:n])
     async with unit_of_work(session_factory) as s:
-        report = await csv_service.upload(s, ctx, "a.csv", b"email\na@amity.edu\nb@amity.edu\nc@amity.edu\n", "member", False, clock)
+        return await csv_service.upload(s, ctx, "a.csv", ("email\n" + emails).encode(), "member", False, clock)
+
+
+async def test_when_every_unsent_invite_is_closed_the_batch_is_stopped_with_invites_closed(session_factory, clock, mail):
+    org, ctx = await seed(session_factory)
+    report = await small_upload(session_factory, ctx, clock)
     async with unit_of_work(session_factory) as s:
         rows = list((await s.execute(select(Invite).order_by(Invite.email))).scalars())
         rows[0].revoked_at, rows[0].revoke_reason = NOW, "revoked"            # a is revoked before it is sent
-        from datetime import timedelta
         rows[1].expires_at = NOW - timedelta(seconds=1)                       # b expires before it is sent
     while await JobRunner(session_factory, None, clock, poll_seconds=0.05).run_once():
         pass
     assert [m.to for m in mail.sent] == ["c@amity.edu"]
-    _, (sent, pending) = await progress(session_factory, report.batch_id, clock)
-    assert (sent, pending) == (1, 0)
+    batch, (sent, pending, not_sent) = await counts(session_factory, report.batch_id, clock)
+    assert (sent, pending, not_sent, batch.status) == (1, 0, 2, "sending")      # before the minute job
     await finish(session_factory, clock)
-    assert (await progress(session_factory, report.batch_id, clock))[0].status == "done"
+    batch, (sent, pending, not_sent) = await counts(session_factory, report.batch_id, clock)
+    assert (batch.status, batch.errors_note, batch.finished_at) == ("stopped", "invites closed", NOW)
+    assert (sent, pending, not_sent) == (1, 0, 2)
+
+
+async def test_when_the_org_goes_inactive_the_batch_is_stopped_with_org_inactive(session_factory, clock, mail):
+    org, ctx = await seed(session_factory)
+    first = await small_upload(session_factory, ctx, clock, n=5)
+    runner = JobRunner(session_factory, None, clock, poll_seconds=0.05)
+    await runner.run_once()                                                     # all 5 jobs run: 5 emails out
+    assert len(mail.sent) == 5
+    async with unit_of_work(session_factory) as s:                              # a second batch, then the org is suspended
+        second = await csv_service.upload(s, ctx, "b.csv", b"email\nx@amity.edu\ny@amity.edu\n", "member", False, clock)
+    async with unit_of_work(session_factory) as s:
+        (await OrgRepository(s).get(org.id)).status = "suspended"
+    while await runner.run_once():
+        pass
+    assert len(mail.sent) == 5                                                  # the send jobs skipped (org inactive)
+    await finish(session_factory, clock)
+    done, _ = await counts(session_factory, first.batch_id, clock)
+    assert done.status == "done" and done.errors_note is None                   # the first batch was fully sent: done
+    stopped, (sent, pending, not_sent) = await counts(session_factory, second.batch_id, clock)
+    assert (stopped.status, stopped.errors_note, stopped.finished_at) == ("stopped", "org inactive", NOW)
+    assert (sent, pending, not_sent) == (0, 0, 2)                               # nothing pending on a stopped batch
+
+
+async def test_a_fully_sent_batch_is_done_not_stopped(session_factory, clock, mail):
+    org, ctx = await seed(session_factory)
+    report = await small_upload(session_factory, ctx, clock)
+    while await JobRunner(session_factory, None, clock, poll_seconds=0.05).run_once():
+        pass
+    await finish(session_factory, clock)
+    batch, (sent, pending, not_sent) = await counts(session_factory, report.batch_id, clock)
+    assert (batch.status, batch.errors_note, sent, pending, not_sent) == ("done", None, 3, 0, 0)
 
 
 async def test_a_batch_with_a_waiting_invite_stays_sending(session_factory, clock):

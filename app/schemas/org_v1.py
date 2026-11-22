@@ -220,6 +220,8 @@ class BatchOut(BaseModel):
     rows_failed: int
     sent: int
     pending_send: int
+    not_sent: int
+    errors_note: str | None = None      # why a stopped batch stopped: "org inactive" or "invites closed"
     created_at: datetime
     finished_at: datetime | None
 

@@ -33,7 +33,7 @@ async def test_status_shape_and_progress(api):
     r = await status(api, batch_id, world.admin)
     assert r.status_code == 200
     assert r.json() == {"batch_id": batch_id, "status": "sending", "dry_run": False, "rows_total": 4, "rows_ok": 3,
-                        "rows_failed": 1, "sent": 0, "pending_send": 3, "created_at": r.json()["created_at"], "finished_at": None}
+                        "rows_failed": 1, "sent": 0, "pending_send": 3, "not_sent": 0, "errors_note": None, "created_at": r.json()["created_at"], "finished_at": None}
     assert r.json()["created_at"].startswith(NOW.strftime("%Y-%m-%dT%H:%M"))
     await api.run_jobs()                                                     # the emails go out
     r = (await status(api, batch_id, world.owner)).json()

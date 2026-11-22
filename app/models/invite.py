@@ -20,6 +20,7 @@ class InviteBatch(Base):
     rows_ok: Mapped[int] = mapped_column(Integer, default=0)
     rows_failed: Mapped[int] = mapped_column(Integer, default=0)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    errors_note: Mapped[str | None] = mapped_column(Text)     # why a stopped batch stopped: org inactive | invites closed
     status: Mapped[str] = mapped_column(Text)
     errors: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

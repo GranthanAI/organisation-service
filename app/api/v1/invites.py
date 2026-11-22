@@ -122,9 +122,10 @@ async def batch_context(batch_id: uuid.UUID, user: CurrentUser = Depends(get_cur
 async def get_batch(found: csv_service.BatchAccess = Depends(batch_context),
                     session: AsyncSession = Depends(get_db_session), clock: Clock = Depends(get_clock)):
     batch = found.batch
-    sent, pending = await csv_service.progress(session, batch, clock.now())
+    sent, pending, not_sent = await csv_service.progress(session, batch, clock.now())
     return BatchOut(batch_id=batch.id, status=batch.status, dry_run=batch.dry_run, rows_total=batch.rows_total,
-                    rows_ok=batch.rows_ok, rows_failed=batch.rows_failed, sent=sent, pending_send=pending,
+                    rows_ok=batch.rows_ok, rows_failed=batch.rows_failed, sent=sent, pending_send=pending, not_sent=not_sent,
+                    errors_note=batch.errors_note,
                     created_at=batch.created_at, finished_at=batch.finished_at)
 
 

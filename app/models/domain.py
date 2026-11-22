@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -19,6 +19,9 @@ class OrgDomain(Base):
     verified_by: Mapped[uuid.UUID | None] = mapped_column()
     verify_method: Mapped[str | None] = mapped_column(Text)
     auto_join: Mapped[bool] = mapped_column(Boolean, default=False)
+    include_subdomains: Mapped[bool] = mapped_column(Boolean, default=False)
+    failed_checks: Mapped[int] = mapped_column(Integer, default=0)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class JoinRequest(Base):

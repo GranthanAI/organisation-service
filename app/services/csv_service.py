@@ -246,9 +246,12 @@ async def batch_for_viewer(session: AsyncSession, batch_id: uuid.UUID, user: Cur
                                          action=Action.VIEW_INVITES))
 
 
-async def progress(session: AsyncSession, batch: InviteBatch, now: datetime) -> tuple[int, int]:
-    """(sent, pending_send) for a batch, derived from the invites."""
-    return await InviteRepository(session).batch_progress(batch.id, now)
+async def progress(session: AsyncSession, batch: InviteBatch, now: datetime) -> tuple[int, int, int]:
+    """(sent, pending_send, not_sent) for a batch, derived from the invites. A finished batch has nothing pending."""
+    sent, pending, not_sent = await InviteRepository(session).batch_progress(batch.id, now)
+    if batch.status != "sending":
+        return sent, 0, not_sent + pending
+    return sent, pending, not_sent
 
 
 def render_errors_csv(errors: list[dict]) -> bytes:

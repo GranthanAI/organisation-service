@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invite import Invite, InviteBatch
+from app.models.organisation import Organisation
 
 BULK_CHUNK = 50      # rows per statement in a bulk insert (statement building is CPU on the event loop)
 
@@ -204,25 +205,46 @@ class InviteRepository:
             await asyncio.sleep(0)
         return inserted
 
-    async def batch_progress(self, batch_id: uuid.UUID, now: datetime) -> tuple[int, int]:
-        """(sent, pending_send): invites of the batch with last_sent_at set, and live ones still waiting for their email
-        (not revoked, not accepted, not past expiry)."""
+    async def batch_progress(self, batch_id: uuid.UUID, now: datetime) -> tuple[int, int, int]:
+        """(sent, pending_send, not_sent) for a batch's invites. sent: last_sent_at set. pending_send: still waiting for
+        their email and able to get it (not revoked, not accepted, not past expiry). not_sent: the rest (closed before
+        their email went out)."""
         sent = func.count().filter(Invite.last_sent_at.is_not(None))
         pending = func.count().filter(
             Invite.last_sent_at.is_(None), Invite.revoked_at.is_(None), Invite.accepted_at.is_(None),
             Invite.expires_at > now)
-        row = (await self.session.execute(select(sent, pending).where(Invite.batch_id == batch_id))).one()
-        return row[0], row[1]
+        row = (await self.session.execute(select(func.count(), sent, pending).where(Invite.batch_id == batch_id))).one()
+        total, sent_count, pending_count = row
+        return sent_count, pending_count, total - sent_count - pending_count
 
-    async def finish_batches(self, now: datetime) -> int:
-        """csv.batches.finish: a sending batch with no live invite waiting for its email becomes done."""
+    async def finish_batches(self, now: datetime, accepting: frozenset[str]) -> tuple[int, int]:
+        """csv.batches.finish. Each batch that is `sending` ends one of three ways:
+        done (every invite was sent); stopped with errors_note "org inactive" (something is unsent and the org is not in
+        `accepting` statuses, so nothing more will go out); stopped with "invites closed" (something is unsent and every
+        unsent invite is revoked, accepted or expired). Returns (done, stopped)."""
+        unsent = func.count(Invite.id).filter(Invite.last_sent_at.is_(None))
+        live = func.count(Invite.id).filter(
+            Invite.last_sent_at.is_(None), Invite.revoked_at.is_(None), Invite.accepted_at.is_(None), Invite.expires_at > now)
         stmt = (
-            update(InviteBatch)
-            .where(InviteBatch.status == "sending", ~select(Invite.id).where(
-                Invite.batch_id == InviteBatch.id, Invite.last_sent_at.is_(None), Invite.revoked_at.is_(None),
-                Invite.accepted_at.is_(None), Invite.expires_at > now).exists())
-            .values(status="done", finished_at=now))
-        return (await self.session.execute(stmt)).rowcount
+            select(InviteBatch.id, Organisation.status, unsent, live)
+            .join(Organisation, Organisation.id == InviteBatch.org_id)
+            .outerjoin(Invite, Invite.batch_id == InviteBatch.id)
+            .where(InviteBatch.status == "sending")
+            .group_by(InviteBatch.id, Organisation.status))
+        done = stopped = 0
+        for batch_id, org_status, unsent_count, live_count in (await self.session.execute(stmt)).all():
+            if unsent_count == 0:
+                new_status, note = "done", None
+            elif org_status not in accepting:
+                new_status, note = "stopped", "org inactive"
+            elif live_count == 0:
+                new_status, note = "stopped", "invites closed"
+            else:
+                continue
+            await self.session.execute(update(InviteBatch).where(InviteBatch.id == batch_id).values(
+                status=new_status, finished_at=now, errors_note=note))
+            done, stopped = done + (new_status == "done"), stopped + (new_status == "stopped")
+        return done, stopped
 
     async def purge_batch_errors(self, cutoff: datetime, limit: int) -> int:
         """invites.purge: batches older than `cutoff` lose their error rows (they hold email addresses)."""

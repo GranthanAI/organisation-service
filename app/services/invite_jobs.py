@@ -102,7 +102,8 @@ async def invites_purge(session: AsyncSession, job: Job, clock: Clock) -> None:
 
 @job_handler(constants.JOB_CSV_BATCHES_FINISH)
 async def csv_batches_finish(session: AsyncSession, job: Job, clock: Clock) -> None:
-    """Every minute: a batch that is sending becomes done once no live invite of it is waiting for its email."""
-    finished = await InviteRepository(session).finish_batches(clock.now())
-    if finished:
-        logger.info("csv batches finished", count=finished)
+    """Every minute: a sending batch becomes done (every invite sent) or stopped (what is unsent can no longer be sent:
+    the org is inactive, or those invites were revoked, accepted or expired)."""
+    done, stopped = await InviteRepository(session).finish_batches(clock.now(), invite_service.ACCEPTING)
+    if done or stopped:
+        logger.info("csv batches finished", done=done, stopped=stopped)
