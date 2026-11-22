@@ -77,3 +77,13 @@ def test_pilot_max_members_is_a_required_keyword():
     assert param.kind is inspect.Parameter.KEYWORD_ONLY and param.default is inspect.Parameter.empty
     with pytest.raises(TypeError):
         _can_join(OrgStatus.PILOT, None, 0, True)  # type: ignore[call-arg]
+
+
+def test_payment_due_refuses_new_joins_whatever_the_count():
+    assert _can_join(OrgStatus.ACTIVE, 50, 0, False, pilot_max_members=PILOT_MAX, payment_due=True) is JoinDecision.PAYMENT_DUE
+    assert _can_join(OrgStatus.ACTIVE, None, 3, False, pilot_max_members=PILOT_MAX, payment_due=True) is JoinDecision.PAYMENT_DUE
+    assert _can_join(OrgStatus.ACTIVE, 50, 0, False, pilot_max_members=PILOT_MAX, payment_due=False) is OK
+
+
+def test_an_inactive_org_wins_over_payment_due():
+    assert _can_join(OrgStatus.SUSPENDED, 50, 0, False, pilot_max_members=PILOT_MAX, payment_due=True) is INACTIVE

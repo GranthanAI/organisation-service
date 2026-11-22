@@ -13,6 +13,7 @@ from app.core.exceptions import (
     ForbiddenRole,
     NotFound,
     OrgInactive,
+    PaymentDue,
     PilotFull,
     SeatsFull,
 )
@@ -152,7 +153,7 @@ async def test_an_org_with_no_seat_row_refuses_members_too(session_factory, cloc
         await do_join(session_factory, clock, org)
 
 
-@pytest.mark.parametrize("seat_status", ["active", "past_due", "cancelling", "suspended"])
+@pytest.mark.parametrize("seat_status", ["active", "cancelling", "suspended"])
 async def test_other_subscription_statuses_still_use_the_seat_count(session_factory, clock, seat_status):
     org = await seed(session_factory, seats=2, seat_status=seat_status, members=1)
     await do_join(session_factory, clock, org)
@@ -378,3 +379,45 @@ async def test_an_unknown_user_gets_unknown_user_422_and_a_deleted_one_stays_not
     with pytest.raises(NotFound):
         async with unit_of_work(session_factory) as s:
             await join_service.join(s, org.id, gone, JoinSource.STAFF, actor="system", clock=clock)
+
+
+# ---------------------------------------------------------------- Q2: past_due refuses NEW joins, everything else as before
+async def test_past_due_seats_refuse_a_new_join_with_payment_due_even_when_seats_are_free(session_factory, clock):
+    org = await seed(session_factory, seats=50, seat_status="past_due", members=1)
+    with pytest.raises(PaymentDue):
+        await do_join(session_factory, clock, org)
+    assert len([m for m in await rows(session_factory, Membership) if m.org_id == org.id]) == 1      # nothing was added
+
+
+async def test_past_due_keeps_existing_members_and_a_later_payment_reopens_joins(session_factory, clock):
+    org = await seed(session_factory, seats=50, seat_status="past_due", members=3)
+    async with unit_of_work(session_factory) as s:
+        actives = await MembershipRepository(s).count_active(org.id)
+    assert actives == 3                                                                      # existing members are untouched
+    async with unit_of_work(session_factory) as s:                                           # billing says: paid
+        (await SeatStateRepository(s).get(org.id)).status = "active"
+    await do_join(session_factory, clock, org)
+
+
+async def test_cancelling_seats_still_count_and_admit_until_full(session_factory, clock):
+    org = await seed(session_factory, seats=2, seat_status="cancelling", members=1)           # paid until period_end
+    await do_join(session_factory, clock, org)
+    with pytest.raises(SeatsFull):
+        await do_join(session_factory, clock, org)
+
+
+@pytest.mark.parametrize("seat_status, outcome", [("active", "joins"), ("cancelling", "joins"), ("past_due", "payment_due"),
+                                                  ("incomplete", "seats_full"), ("ended", "seats_full")])
+async def test_every_seat_status_for_a_new_join(session_factory, clock, seat_status, outcome):
+    org = await seed(session_factory, seats=None if seat_status in ("incomplete", "ended") else 50, seat_status=seat_status, owners=1)
+    if outcome == "joins":
+        await do_join(session_factory, clock, org)
+    else:
+        with pytest.raises(PaymentDue if outcome == "payment_due" else SeatsFull):
+            await do_join(session_factory, clock, org)
+
+
+async def test_payment_due_is_not_bypassed_by_the_owner_exception_or_by_an_invite(session_factory, clock):
+    org = await seed(session_factory, seats=50, seat_status="past_due", members=0)
+    with pytest.raises(PaymentDue):
+        await do_join(session_factory, clock, org, role=Role.OWNER)

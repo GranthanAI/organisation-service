@@ -158,11 +158,16 @@ class CsvInvalid(DomainError):
     code = "CSV_INVALID"
 
 
+class PaymentDue(DomainError):
+    code = "PAYMENT_DUE"
+
+
 _JOIN_ERRORS: dict[JoinDecision, type[DomainError] | None] = {
     JoinDecision.OK: None,
     JoinDecision.SEATS_FULL: SeatsFull,
     JoinDecision.PILOT_FULL: PilotFull,
     JoinDecision.ORG_INACTIVE: OrgInactive,
+    JoinDecision.PAYMENT_DUE: PaymentDue,
 }
 
 

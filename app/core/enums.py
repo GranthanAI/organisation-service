@@ -103,3 +103,4 @@ class JoinDecision(str, Enum):
     SEATS_FULL = "seats_full"
     PILOT_FULL = "pilot_full"
     ORG_INACTIVE = "org_inactive"
+    PAYMENT_DUE = "payment_due"

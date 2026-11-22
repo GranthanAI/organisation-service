@@ -130,3 +130,10 @@ async def test_the_timing_histogram_has_a_me_label(api):
     before = label._sum.get()
     await api.client.get(ME, headers=api.h(world.member))
     assert label._sum.get() > before
+
+
+async def test_me_shows_past_due_and_cancelling_seats_so_the_admin_knows_why_joins_stop(api):
+    for status in ("past_due", "cancelling"):
+        world = await api.seed_org(seats=50, seat_status=status)
+        seats = (await api.client.get("/org/v1/me", headers=api.h(world.admin))).json()["seats"]
+        assert seats["status"] == status and seats["bought"] == 50 and seats["over_by"] == 0         # members stay; the status explains
