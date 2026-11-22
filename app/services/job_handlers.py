@@ -26,6 +26,14 @@ PROCESSED_EVENTS_RETENTION = timedelta(days=30)
 OUTBOX_PUBLISHED_RETENTION = timedelta(days=7)
 
 
+class DeferJob(Exception):
+    """Raised by a handler to run the job again at `run_at` WITHOUT counting an attempt or a failure."""
+
+    def __init__(self, run_at) -> None:
+        super().__init__("deferred")
+        self.run_at = run_at
+
+
 def job_handler(kind: str) -> Callable[[JobHandler], JobHandler]:
     def register(fn: JobHandler) -> JobHandler:
         if kind in REGISTRY:

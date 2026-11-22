@@ -15,6 +15,10 @@ INTERNAL_REQUESTS = Histogram("org_internal_requests_seconds", "Duration of /int
 # --- jobs ---
 JOBS_FAILED = Counter("org_jobs_failed", "Jobs given up on after their last attempt", ["kind"])
 
+# --- email sending ---
+EMAIL_SENT = Counter("org_email_sent", "Invite emails sent (counter, _total)")
+EMAIL_DEFERRED = Counter("org_email_deferred", "Invite email sends deferred by the global send rate (counter, _total)")
+
 # --- workers ---
 WORKER_UP = Gauge("org_worker_up", "1 while a background worker is running, 0 when it is down or restarting", ["worker"])
 

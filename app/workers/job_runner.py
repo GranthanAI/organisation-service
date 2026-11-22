@@ -21,7 +21,7 @@ from app.db.session import unit_of_work
 from app.models.job import Job
 from app.repositories.job_repository import JobRepository
 from app.services import job_service
-from app.services.job_handlers import REGISTRY, JobHandler
+from app.services.job_handlers import REGISTRY, DeferJob, JobHandler
 from app.telemetry.metrics import JOBS_FAILED
 from app.utils.ids import uuid7
 from app.workers.backoff import backoff_seconds, sleep_or_stop
@@ -71,9 +71,16 @@ class JobRunner:
                 job.last_error = None
                 await session.flush()
                 await self._schedule_next(session, job)
+        except DeferJob as deferred:
+            await self._defer(job_id, deferred.run_at)
         except Exception as exc:
             logger.warning("job failed", job_id=str(job_id), kind=kind, error=type(exc).__name__)
             await self._record_failure(job_id, exc)
+
+    async def _defer(self, job_id, run_at) -> None:
+        async with unit_of_work(self._factory) as session:
+            job = await session.get(Job, job_id)
+            job.run_at, job.locked_until = run_at, None          # not a failure: attempts and last_error stay as they were
 
     async def _record_failure(self, job_id, exc: Exception) -> None:
         async with unit_of_work(self._factory) as session:

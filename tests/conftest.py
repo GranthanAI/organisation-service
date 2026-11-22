@@ -52,3 +52,16 @@ def _fresh_known_user_cache():
     """The 'already in sync' cache is process memory; every test starts empty."""
     from app.security.known_user_sync import clear_cache
     clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def fake_throttle_redis(monkeypatch):
+    """The global email send rate (N1) uses Redis; tests never reach a real one. A fresh fake per test."""
+    import fakeredis
+
+    from app.services import email_throttle
+
+    fake = fakeredis.FakeAsyncRedis()
+    monkeypatch.setattr(email_throttle, "get_redis", lambda: fake)
+    email_throttle.reset_fallback()
+    yield fake

@@ -77,9 +77,11 @@ class Settings(BaseSettings):
     INVITE_TOKEN_SECRET: str = DEV_INVITE_TOKEN_SECRET
     INVITE_EMAILS_VIA: str = "local"       # local: this service sends the email | notification: only the event is published
     LINK_MAX_TTL_DAYS: int = 30
+    EMAIL_SENDS_PER_MINUTE: int = 60       # global cap on invite emails a minute; match the SMTP provider's limit
     INVITES_PER_ORG_PER_DAY: int = 200
     CSV_MAX_ROWS: int = 5000
     CSV_MAX_BYTES: int = 1_048_576
+    CSV_ROWS_PER_ORG_PER_DAY: int = 5000   # rows created by CSV uploads per organisation per UTC day
 
     # --- Pilots and seats ---
     PILOT_MAX_MEMBERS: int = 25

@@ -20,8 +20,9 @@ from app.repositories.invite_repository import InviteRepository
 from app.repositories.membership_repository import MembershipRepository
 from app.repositories.org_repository import OrgRepository
 from app.security.tokens import hash_token, invite_token
-from app.services import invite_service
-from app.services.job_handlers import job_handler
+from app.services import email_throttle, invite_service
+from app.services.job_handlers import DeferJob, job_handler
+from app.telemetry.metrics import EMAIL_DEFERRED, EMAIL_SENT
 
 GRANTHANAI = "GranthanAI"
 
@@ -41,6 +42,10 @@ async def invite_send(session: AsyncSession, job: Job, clock: Clock) -> None:
     if org is None or org.status not in invite_service.ACCEPTING:
         return
 
+    until = await email_throttle.acquire(clock)          # the global send rate (N1): nothing is changed when deferred
+    if until is not None:
+        EMAIL_DEFERRED.inc()
+        raise DeferJob(until)
     token = invite_token(invite.id, version)
     if invite.token_hash != hash_token(token):           # an invite made before tokens were derived: fixed at first send
         invite.token_hash = hash_token(token)
@@ -51,6 +56,7 @@ async def invite_send(session: AsyncSession, job: Job, clock: Clock) -> None:
     link = f"{settings.APP_BASE_URL.rstrip('/')}/join/{token}"
     email = render_invite(inviter_name=inviter, org_name=org.name, role=invite.role, expires_at=invite.expires_at, link=link)
     await get_email_sender().send(OutgoingEmail(to=str(invite.email), subject=email.subject, text=email.text, html=email.html))
+    EMAIL_SENT.inc()
     invite.last_sent_at = now
     await invites.save(invite)
     logger.info("invite email sent", invite_id=str(invite.id), version=version)     # never the link or the address
