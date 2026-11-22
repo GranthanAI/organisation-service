@@ -16,6 +16,7 @@ from app.core import constants
 from app.core.clock import Clock
 from app.core.config import settings
 from app.core.constants import RATE_CSV_UPLOAD, RATE_INVITE_ACCEPT, RATE_INVITE_CREATE, RATE_INVITE_PREVIEW
+from app.core.exceptions import InviteExpired
 from app.db.session import unit_of_work
 from app.middleware.rate_limit import rate_limit
 from app.schemas.org_v1 import (
@@ -93,8 +94,14 @@ async def revoke_invite(invite_id: uuid.UUID, ctx: OrgContext = Depends(require_
 @router.post("/invites/accept", response_model=AcceptOut, dependencies=[Depends(rate_limit(RATE_INVITE_ACCEPT))])
 async def accept_invite(body: AcceptIn, user: CurrentUser = Depends(get_current_user),
                         factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
-    async with unit_of_work(factory) as session:
-        return await invite_service.accept(session, user, body.token, clock)
+    try:
+        async with unit_of_work(factory) as session:
+            return await invite_service.accept(session, user, body.token, clock)
+    except InviteExpired as exc:
+        if getattr(exc, "close_invite_id", None) is not None:       # close it, in a transaction of its own, then answer 410
+            async with unit_of_work(factory) as session:
+                await invite_service.close_expired(session, exc.close_invite_id, clock.now())
+        raise
 
 
 # ---- CSV bulk invites (Phase 8): validated and created inside the request; only the emails go out in the background

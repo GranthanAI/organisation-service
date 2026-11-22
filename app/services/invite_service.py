@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import constants
 from app.core.clock import Clock, system_clock
@@ -31,7 +31,6 @@ from app.core.exceptions import (
     ValidationFailed,
 )
 from app.db.errors import map_integrity_error
-from app.db.session import unit_of_work
 from app.events import topics
 from app.events.producers import enqueue
 from app.events.schemas import OrgInviteCreated, iso_z
@@ -254,13 +253,12 @@ async def preview(session: AsyncSession, token: str, clock: Clock = system_clock
 
 
 # ---------------------------------------------------------------------------------------------------- accept
-async def _close_expired_alone(session: AsyncSession, invite_id: uuid.UUID, now: datetime) -> None:
-    """Close an expired invite in ITS OWN transaction, because the caller is about to raise (which rolls back its own)."""
-    factory = async_sessionmaker(bind=session.bind, expire_on_commit=False, autoflush=False)
-    async with unit_of_work(factory) as own:
-        invite = await InviteRepository(own).get_for_update(invite_id)
-        if invite is not None and invite.accepted_at is None and invite.revoked_at is None:
-            invite.revoked_at, invite.revoke_reason = now, InviteRevokeReason.EXPIRED.value
+async def close_expired(session: AsyncSession, invite_id: uuid.UUID, now: datetime) -> None:
+    """Close an expired invite (revoked_at, reason expired). The route calls it in its OWN transaction after accept() raised
+    InviteExpired (which rolled back the first one): a request never holds two connections."""
+    invite = await InviteRepository(session).get_for_update(invite_id)
+    if invite is not None and invite.accepted_at is None and invite.revoked_at is None:
+        invite.revoked_at, invite.revoke_reason = now, InviteRevokeReason.EXPIRED.value
 
 
 async def accept(session: AsyncSession, user: CurrentUser, token: str, clock: Clock = system_clock) -> dict:
@@ -271,8 +269,9 @@ async def accept(session: AsyncSession, user: CurrentUser, token: str, clock: Cl
     if found is None:
         raise InviteInvalid("This invitation is not valid")
     if found.accepted_at is None and found.revoked_at is None and found.expires_at <= now:
-        await _close_expired_alone(session, found.id, now)
-        raise InviteExpired("This invitation has expired")
+        error = InviteExpired("This invitation has expired")
+        error.close_invite_id = found.id                       # the route closes it after this transaction rolls back
+        raise error
 
     invite = await InviteRepository(session).get_for_update(found.id)     # two accepts of one invite queue here
     if invite is None or invite.token_hash != hash_token(token):

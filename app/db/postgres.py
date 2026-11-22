@@ -22,6 +22,7 @@ def get_engine() -> AsyncEngine:
             max_overflow=settings.DB_MAX_OVERFLOW,
             pool_pre_ping=settings.DB_PRE_PING,
             pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+            pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
             connect_args={
                 "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
                 "server_settings": {"statement_timeout": str(settings.DB_STATEMENT_TIMEOUT_MS)},

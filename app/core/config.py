@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = DEV_DATABASE_URL
     DB_POOL_SIZE: int = 10                 # per replica; see docs/lld.md for the Postgres max_connections math
     DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT_SECONDS: float = 10.0  # how long a request waits for a free connection before answering 503
     DB_POOL_RECYCLE_SECONDS: int = 1800    # connections older than this are replaced at checkout (instead of a ping per checkout)
     DB_PRE_PING: bool = False              # one extra round trip on EVERY checkout: off; reads retry once on a dropped connection
     DB_CONNECT_TIMEOUT_SECONDS: float = 5.0

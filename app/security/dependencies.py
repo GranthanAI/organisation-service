@@ -5,6 +5,7 @@ Nothing here logs the Authorization header, a raw token or the jti.
 
 import uuid
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import Depends, Request
@@ -54,8 +55,11 @@ async def authenticate_user(method: str, token: str | None, redis: Redis, sessio
         raise Unauthenticated()
     known = await KnownUserRepository(session).get(user.id)
     if known is not None and known.deleted_at is not None:
+        await session.rollback()
         raise Unauthenticated()
-    await sync_known_user(session, user.id, user.email, known)
+    stored_email = None if known is None else known.email
+    await session.rollback()      # give the connection back NOW: a route that then opens its own transaction must not hold two
+    await sync_known_user(session, user.id, user.email, None if known is None else SimpleNamespace(email=stored_email))
     return user
 
 
@@ -97,9 +101,10 @@ def require_org_role(action: Action) -> Callable[..., Awaitable[OrgContext]]:
         membership = await MembershipRepository(session).get_active(org_id, user.id)
         if membership is None:
             raise NotFound("Organisation not found")
-        role = Role(membership.role)
+        role, membership_id = Role(membership.role), membership.id
+        await session.rollback()      # release the connection before the route opens its own transaction (no request holds two)
         if permission_rules.permission_for(action, role) is not Permission.OWN_ROLE_ONLY:
             permission_rules.check(action, role)
-        return OrgContext(org_id=org_id, user=user, role=role, membership_id=membership.id, action=action)
+        return OrgContext(org_id=org_id, user=user, role=role, membership_id=membership_id, action=action)
 
     return dependency

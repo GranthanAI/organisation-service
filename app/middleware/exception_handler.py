@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.route_template import route_template
@@ -94,6 +95,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException):
         return http_error_response(request, exc)
+
+    @app.exception_handler(SQLAlchemyTimeoutError)
+    async def _pool_exhausted(request: Request, exc: SQLAlchemyTimeoutError):
+        logger.error("database connection pool exhausted", path=request.url.path, correlation_id=_correlation_id(request))
+        return problem_response(request, 503, "UPSTREAM_UNAVAILABLE", "The service is busy, try again shortly.", headers={"Retry-After": "1"})
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):
