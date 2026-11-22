@@ -45,6 +45,7 @@ async def get_me(session: AsyncSession, user_id: uuid.UUID) -> dict:
                 "pilot_ends_at": org.pilot_ends_at},
         "role": role,
         "seats": {"plan_code": seat.plan_code if seat else None, "status": seat.status if seat else None,
-                  "used": used, "bought": bought, "over_by": max(0, used - bought) if bought is not None else 0},
+                  "used": used, "bought": bought, "over_by": max(0, used - bought) if bought is not None else 0,
+                  "pending": seat.pending_seats if seat and bought is not None else None},
         "features": features_for(seat.plan_code if seat else None),
     }

@@ -87,3 +87,10 @@ def test_payment_due_refuses_new_joins_whatever_the_count():
 
 def test_an_inactive_org_wins_over_payment_due():
     assert _can_join(OrgStatus.SUSPENDED, 50, 0, False, pilot_max_members=PILOT_MAX, payment_due=True) is INACTIVE
+
+
+def test_payment_due_statuses_are_past_due_and_suspended():
+    from app.services.seat_rules import refuses_new_joins
+    assert refuses_new_joins("past_due") and refuses_new_joins("suspended")
+    for status in ("active", "cancelling", "incomplete", "ended", None):
+        assert not refuses_new_joins(status), status

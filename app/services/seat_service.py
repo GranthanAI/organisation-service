@@ -27,7 +27,7 @@ def snapshot(seat: SeatState | None) -> dict | None:
         return None
     return {"plan_code": seat.plan_code, "variant": seat.variant, "seats_bought": seat.seats_bought,
             "status": seat.status, "period_end": seat.period_end.isoformat() if seat.period_end else None,
-            "source": seat.source}
+            "source": seat.source, "pending_seats": seat.pending_seats}
 
 
 def resolve_seats(plan: PlanCode, variant: OrgType, seats_bought: int | None) -> int | None:
@@ -84,7 +84,7 @@ async def set_from_staff(
     else:
         seat.plan_code, seat.variant, seat.seats_bought = plan.value, variant_enum.value, seats
         seat.status, seat.period_end, seat.source = SeatStatus.ACTIVE.value, period_end, SeatSource.STAFF.value
-        seat.source_ref, seat.refreshed_at = None, now
+        seat.source_ref, seat.pending_seats, seat.refreshed_at = None, None, now
         await seat_repo.save(seat)
 
     active = await MembershipRepository(session).count_active(org_id)

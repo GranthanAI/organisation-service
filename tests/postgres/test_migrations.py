@@ -51,7 +51,7 @@ def empty_db():
 def test_upgrade_downgrade_upgrade(empty_db):
     testdb.upgrade(empty_db)
     assert tables(empty_db) == TABLES | {"alembic_version"}
-    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0009_domains"
+    assert fetch(empty_db, "SELECT version_num FROM alembic_version")[0]["version_num"] == "0010_pending_seats"
 
     testdb.downgrade(empty_db, "base")
     assert tables(empty_db) == {"alembic_version"}
@@ -326,3 +326,42 @@ def test_0009_up_down_up_keeps_data_and_maps_stopped_back(empty_db):
     assert fetch(empty_db, "SELECT count(*) AS n FROM org_domains")[0]["n"] == 1             # the data survives
     testdb.upgrade(empty_db)
     assert columns(empty_db, "org_domains")["include_subdomains"] is False
+
+
+def test_0010_up_down_up_keeps_seats_and_rejects_nonsense(empty_db):
+    testdb.upgrade(empty_db, "0009_domains")
+    assert "pending_seats" not in columns(empty_db, "seat_state")
+
+    async def seed():
+        import uuid as _uuid
+        conn = await asyncpg.connect(empty_db.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            org = _uuid.uuid4()
+            await conn.execute("INSERT INTO organisations (id, name, slug, type, status, created_at, updated_at) "
+                               "VALUES ($1, 'o', 'o10', 'college', 'active', now(), now())", org)
+            await conn.execute("INSERT INTO seat_state (org_id, plan_code, variant, seats_bought, status, source, refreshed_at) "
+                               "VALUES ($1, 'org_pro', 'college', 60, 'active', 'staff', now())", org)
+            return org
+        finally:
+            await conn.close()
+
+    org = asyncio.run(seed())
+    testdb.upgrade(empty_db, "0010_pending_seats")
+    assert columns(empty_db, "seat_state")["pending_seats"] is True
+    assert fetch(empty_db, "SELECT pending_seats, seats_bought FROM seat_state")[0]["pending_seats"] is None
+
+    async def bad():
+        conn = await asyncpg.connect(empty_db.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            await conn.execute("UPDATE seat_state SET pending_seats = 40 WHERE org_id = $1", org)
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute("UPDATE seat_state SET pending_seats = -1 WHERE org_id = $1", org)
+        finally:
+            await conn.close()
+
+    asyncio.run(bad())
+    testdb.downgrade(empty_db, "0009_domains")
+    assert "pending_seats" not in columns(empty_db, "seat_state")
+    assert fetch(empty_db, "SELECT seats_bought FROM seat_state")[0]["seats_bought"] == 60
+    testdb.upgrade(empty_db)
+    assert columns(empty_db, "seat_state")["pending_seats"] is True

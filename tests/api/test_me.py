@@ -39,7 +39,7 @@ async def test_owner_admin_and_member_views(api, who, role):
     assert body["role"] == role
     assert body["org"] == {"id": str(world.org.id), "name": "Amity University", "slug": world.org.slug,
                            "type": "college", "status": "active", "pilot_ends_at": None}
-    assert body["seats"] == {"plan_code": "org_pro", "status": "active", "used": 5, "bought": 50, "over_by": 0}
+    assert body["seats"] == {"plan_code": "org_pro", "status": "active", "used": 5, "bought": 50, "over_by": 0, "pending": None}
     assert set(body) == {"org", "role", "seats", "features"}
 
 
@@ -47,7 +47,7 @@ async def test_a_pilot_view(api):
     world = await api.seed_org(status="pilot", plan_code="pilot", seats=25, pilot_ends_at=NOW + timedelta(days=12))
     body = (await api.client.get(ME, headers=api.h(world.member))).json()
     assert body["org"]["status"] == "pilot" and body["org"]["pilot_ends_at"].startswith("2026-12-03")
-    assert body["seats"] == {"plan_code": "pilot", "status": "active", "used": 5, "bought": 25, "over_by": 0}
+    assert body["seats"] == {"plan_code": "pilot", "status": "active", "used": 5, "bought": 25, "over_by": 0, "pending": None}
     assert body["features"] == {"lock_modes": False, "shared_modes_max": 3, "usage_reports": False, "spend_cap": False,
                                 "csv_invites": True, "invite_links": True, "domains": True}
 
@@ -55,7 +55,7 @@ async def test_a_pilot_view(api):
 async def test_pay_as_you_go_has_no_bought_count(api):
     world = await api.seed_org(plan_code="payg", seats=None)
     body = (await api.client.get(ME, headers=api.h(world.owner))).json()
-    assert body["seats"] == {"plan_code": "payg", "status": "active", "used": 5, "bought": None, "over_by": 0}
+    assert body["seats"] == {"plan_code": "payg", "status": "active", "used": 5, "bought": None, "over_by": 0, "pending": None}
     assert body["features"] == {"lock_modes": True, "shared_modes_max": None, "usage_reports": True, "spend_cap": True,
                                 "csv_invites": True, "invite_links": True, "domains": True}
 
@@ -89,7 +89,7 @@ async def test_features_per_plan(api, plan, expected):
 async def test_an_org_with_no_seat_row_has_no_paid_features(api):
     world = await api.seed_org(with_seat=False)
     body = (await api.client.get(ME, headers=api.h(world.member))).json()
-    assert body["seats"] == {"plan_code": None, "status": None, "used": 5, "bought": None, "over_by": 0}
+    assert body["seats"] == {"plan_code": None, "status": None, "used": 5, "bought": None, "over_by": 0, "pending": None}
     assert body["features"]["lock_modes"] is False and body["features"]["usage_reports"] is False
 
 
@@ -137,3 +137,15 @@ async def test_me_shows_past_due_and_cancelling_seats_so_the_admin_knows_why_joi
         world = await api.seed_org(seats=50, seat_status=status)
         seats = (await api.client.get("/org/v1/me", headers=api.h(world.admin))).json()["seats"]
         assert seats["status"] == status and seats["bought"] == 50 and seats["over_by"] == 0         # members stay; the status explains
+
+
+async def test_me_shows_suspended_seats_and_the_pending_decrease(api):
+    from app.db.session import unit_of_work
+    from app.models.seat_state import SeatState
+    world = await api.seed_org(seats=50, seat_status="suspended")
+    assert (await api.client.get("/org/v1/me", headers=api.h(world.admin))).json()["seats"]["status"] == "suspended"
+    assert (await api.client.get("/org/v1/me", headers=api.h(world.admin))).json()["seats"]["pending"] is None
+    async with unit_of_work(api.sf) as s:
+        (await s.get(SeatState, world.org.id)).pending_seats = 40
+    seats = (await api.client.get("/org/v1/me", headers=api.h(world.members[0]))).json()["seats"]
+    assert (seats["pending"], seats["bought"], seats["status"]) == (40, 50, "suspended")

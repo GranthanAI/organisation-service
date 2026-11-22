@@ -100,7 +100,7 @@ async def test_a_real_upload_writes_invites_events_jobs_and_one_audit_row(api):
     (batch,) = await table(api, InviteBatch)
     assert (batch.status, batch.dry_run, batch.rows_total, batch.rows_ok, batch.rows_failed) == ("sending", False, 3, 2, 1)
     assert batch.errors == [{"row": 4, "email": "bad", "reason": "invalid_email"}]
-    assert body["seats"] == {"used": 5, "bought": 50, "open_invites": 2}
+    assert body["seats"] == {"used": 5, "bought": 50, "open_invites": 2, "payment_due": False}
     await api.run_jobs()
     assert sorted(m.to for m in api.mail.sent) == ["a@amity.edu", "b@amity.edu"]
 
@@ -310,3 +310,13 @@ async def test_filename_and_name_are_trimmed_and_kept_short(api):
     assert len(invite.invitee_name) == 200
     (batch,) = await table(api, InviteBatch)
     assert len(batch.filename) <= 200
+
+
+async def test_csv_uploads_are_allowed_for_unpaid_seats_but_the_report_warns(api):
+    for status, expected in (("active", False), ("past_due", True), ("suspended", True)):
+        world = await api.seed_org(seat_status=status)
+        r = await upload(api, world, world.owner, sheet(f"a-{status}@amity.edu", f"b-{status}@amity.edu"))
+        assert r.status_code == 200 and r.json()["rows_ok"] == 2, status
+        assert r.json()["seats"]["payment_due"] is expected, status
+        dry = await upload(api, world, world.owner, sheet(f"c-{status}@amity.edu"), dry_run=True)
+        assert dry.json()["seats"]["payment_due"] is expected, status

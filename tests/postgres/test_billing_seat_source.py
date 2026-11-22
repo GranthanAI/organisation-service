@@ -143,6 +143,20 @@ async def test_seats_dropping_below_members_removes_nobody_and_says_how_many_ove
     assert (audit.details["active_members"], audit.details["over_by"]) == (5, 2)
 
 
+async def test_pending_seats_are_stored_and_cleared(session_factory, clock, billing):
+    org = await seed(session_factory, plan="org_pro", seats=60, source="billing")
+    billing.default = Subscription(plan_code="org_pro", variant="college", seats=120, status="active", period_end=PERIOD_END,
+                                   subscription_id="s1", pending_seats=100)
+    await refresh(session_factory, org, clock)
+    assert (await seat_of(session_factory, org)).pending_seats == 100
+    billing.default = sub(seats=100)
+    await refresh(session_factory, org, clock)
+    assert (await seat_of(session_factory, org)).pending_seats is None
+    billing.default = NoSubscription()
+    await refresh(session_factory, org, clock)
+    assert (await seat_of(session_factory, org)).pending_seats is None
+
+
 async def test_a_paid_plan_activates_a_pilot_and_payg_has_no_cap(session_factory, clock, billing):
     org = await seed(session_factory, status="pilot", plan="pilot", seats=25)
     billing.default = sub(plan="payg", seats=99)

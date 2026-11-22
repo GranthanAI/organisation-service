@@ -39,7 +39,7 @@ from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.security.models import CurrentUser, OrgContext
 from app.security.tokens import invite_token_hash
-from app.services import audit_service, csv_parse, invite_service, permission_rules
+from app.services import audit_service, csv_parse, invite_service, permission_rules, seat_rules
 from app.services.email_rules import normalize_email
 from app.services.permission_rules import Action
 from app.telemetry.metrics import INVITES_CREATED
@@ -64,6 +64,7 @@ class CsvReport:
     used: int
     bought: int | None
     open_invites: int
+    payment_due: bool = False
 
 
 def _error(row: csv_parse.CsvRow, email: str, reason: str) -> dict:
@@ -167,6 +168,7 @@ async def upload(session: AsyncSession, ctx: OrgContext, filename: str | None, d
 
     members = MembershipRepository(session)
     seat = await SeatStateRepository(session).get(ctx.org_id)
+    due = seat is not None and seat_rules.refuses_new_joins(seat.status)     # invites are allowed; accepting is not (R2)
     used = await members.count_active(ctx.org_id)
     open_now = await invites.count_open(ctx.org_id, now)
     bought = None if seat is None or seat.status in invite_service.NO_SEATS else seat.seats_bought
@@ -192,7 +194,7 @@ async def upload(session: AsyncSession, ctx: OrgContext, filename: str | None, d
     if dry_run:
         batch.errors = sorted(errors, key=lambda e: e["row"])
         await invites.add_batch(batch)
-        return _report(batch, errors, used, bought, open_now)
+        return _report(batch, errors, used, bought, open_now, due)
 
     # ---- create (the same transaction): invites, events, send jobs, one audit row
     expires = now + timedelta(days=settings.INVITE_TTL_DAYS)
@@ -220,12 +222,13 @@ async def upload(session: AsyncSession, ctx: OrgContext, filename: str | None, d
         session, ctx.user, constants.AUDIT_INVITE_CSV_UPLOADED, "invite_batch", batch.id,
         {"batch_id": str(batch.id), "rows_total": batch.rows_total, "rows_ok": batch.rows_ok,
          "rows_failed": batch.rows_failed}, org_id=ctx.org_id, clock=clock)
-    return _report(batch, errors, used, bought, await invites.count_open(ctx.org_id, now))
+    return _report(batch, errors, used, bought, await invites.count_open(ctx.org_id, now), due)
 
 
-def _report(batch: InviteBatch, errors: list[dict], used: int, bought: int | None, open_invites: int) -> CsvReport:
+def _report(batch: InviteBatch, errors: list[dict], used: int, bought: int | None, open_invites: int,
+            payment_due: bool = False) -> CsvReport:
     return CsvReport(batch.id, batch.dry_run, batch.rows_total, batch.rows_ok, batch.rows_failed,
-                     sorted(errors, key=lambda e: e["row"]), used, bought, open_invites)
+                     sorted(errors, key=lambda e: e["row"]), used, bought, open_invites, payment_due)
 
 
 # ---------------------------------------------------------------------------------------------------- batch status

@@ -96,6 +96,7 @@ class BillingSeatSource:
                 return RefreshResult("no_subscription")
             old = snapshot(seat)
             seat.status, seat.source, seat.source_ref, seat.refreshed_at = SeatStatus.ENDED.value, SeatSource.BILLING.value, None, now
+            seat.pending_seats = None
             return await self._finish(session, org, seat, old, now, clock, "ended")
 
         values = self._values(subscription, org.type)
@@ -122,7 +123,8 @@ class BillingSeatSource:
             logger.error("billing sent a subscription status this service does not know", status=sub.status)
             return None
         return {"plan_code": plan.value, "variant": sub.variant or org_type, "seats_bought": None if plan is PlanCode.PAYG else sub.seats,
-                "status": status, "period_end": sub.period_end, "source_ref": sub.subscription_id}
+                "status": status, "period_end": sub.period_end, "source_ref": sub.subscription_id,
+                "pending_seats": sub.pending_seats}
 
     @staticmethod
     async def _finish(session: AsyncSession, org, seat: SeatState, old: dict | None, now: datetime, clock: Clock,

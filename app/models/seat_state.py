@@ -20,4 +20,5 @@ class SeatState(Base):
     period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source: Mapped[str] = mapped_column(Text)
     source_ref: Mapped[str | None] = mapped_column(Text)
+    pending_seats: Mapped[int | None] = mapped_column(Integer)      # a decrease billing will apply at the period end
     refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

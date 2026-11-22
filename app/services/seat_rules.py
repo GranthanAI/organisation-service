@@ -4,14 +4,24 @@ Every active membership is a seat, owners and admins included (D3). No overage: 
 `seats_bought=None` means no cap (Pay as you Go). Pilots are also capped at `pilot_max_members`, which callers pass
 from settings.PILOT_MAX_MEMBERS (this file reads no configuration).
 
-Seat statuses (billing's): active and cancelling (paid until period_end) count as seats; past_due keeps its members but
-refuses new joins (PAYMENT_DUE, `payment_due=True`); incomplete and ended have no seats (the caller passes 0).
+Seat statuses (billing's): active and cancelling (paid until period_end) count as seats; past_due and suspended keep their
+members but refuse new joins (PAYMENT_DUE, `payment_due=True`, see `refuses_new_joins`); incomplete and ended have no seats (the
+caller passes 0).
 """
 
 from app.core.enums import JoinDecision, OrgStatus
 
 # Only these states accept new members; pilot_expired, suspended and closed do not.
 JOINABLE = frozenset({OrgStatus.PILOT, OrgStatus.ACTIVE})
+
+
+PAYMENT_DUE_STATUSES = frozenset({"past_due", "suspended"})
+
+
+def refuses_new_joins(seat_status: str | None) -> bool:
+    """True for a subscription that has not been paid (past_due) or that billing has suspended: existing members stay, nobody
+    NEW joins until it is sorted out."""
+    return seat_status in PAYMENT_DUE_STATUSES
 
 
 def can_join(

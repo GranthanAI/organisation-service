@@ -64,7 +64,8 @@ async def create_invites(body: CreateInvitesIn, ctx: OrgContext = Depends(requir
         results, seats = await invite_service.create_invites(session, ctx, body.emails, body.role, clock)
     return CreateInvitesOut(
         results=[InviteResultOut(email=r.email, result=r.result, invite_id=r.invite_id) for r in results],
-        seats=SeatsInfoOut(used=seats.used, bought=seats.bought, open_invites=seats.open_invites, warning=seats.warning))
+        seats=SeatsInfoOut(used=seats.used, bought=seats.bought, open_invites=seats.open_invites, warning=seats.warning,
+                            payment_due=seats.payment_due))
 
 
 @router.get("/orgs/{org_id}/invites", response_model=InvitePageOut)
@@ -116,7 +117,7 @@ async def upload_csv(file: UploadFile = File(...), role: str = Form("member"), d
     return CsvUploadOut(
         batch_id=report.batch_id, dry_run=report.dry_run, rows_total=report.rows_total, rows_ok=report.rows_ok,
         rows_failed=report.rows_failed, errors_preview=report.errors[:constants.CSV_ERRORS_PREVIEW],
-        seats=CsvSeatsOut(used=report.used, bought=report.bought, open_invites=report.open_invites))
+        seats=CsvSeatsOut(used=report.used, bought=report.bought, open_invites=report.open_invites, payment_due=report.payment_due))
 
 
 async def batch_context(batch_id: uuid.UUID, user: CurrentUser = Depends(get_current_user),

@@ -184,9 +184,9 @@ async def test_the_per_user_rate_limit_bucket_applies(api):
 async def test_the_seat_warning_only_informs(api):
     world = await api.seed_org(plan_code="org_pro", seats=6, admins=1, members=3)            # 5 used, 1 free seat
     ok = (await invite(api, world, ["a@amity.edu"])).json()["seats"]
-    assert ok == {"used": 5, "bought": 6, "open_invites": 1, "warning": False}
+    assert ok == {"used": 5, "bought": 6, "open_invites": 1, "warning": False, "payment_due": False}
     over = await invite(api, world, ["b@amity.edu", "c@amity.edu"])
-    assert over.status_code == 200 and over.json()["seats"] == {"used": 5, "bought": 6, "open_invites": 3, "warning": True}
+    assert over.status_code == 200 and over.json()["seats"] == {"used": 5, "bought": 6, "open_invites": 3, "warning": True, "payment_due": False}
     assert [x["result"] for x in over.json()["results"]] == ["created", "created"]            # created anyway: accept enforces
 
 
@@ -259,3 +259,11 @@ async def test_an_invited_known_user_with_no_membership_is_still_invitable(api):
     async with unit_of_work(api.sf) as s:
         await KnownUserRepository(s).upsert(stranger, "free.agent@amity.edu", "Free Agent", NOW)
     assert (await invite(api, world, ["free.agent@amity.edu"])).json()["results"][0]["result"] == "created"
+
+
+async def test_invites_are_allowed_for_unpaid_seats_but_the_response_warns(api):
+    for status, expected in (("active", False), ("cancelling", False), ("past_due", True), ("suspended", True)):
+        world = await api.seed_org(seat_status=status)
+        r = await api.post(f"/org/v1/orgs/{world.org.id}/invites", {"emails": [f"x-{status}@amity.edu"]}, api.h(world.owner))
+        assert r.status_code == 200 and r.json()["results"][0]["result"] == "created", status
+        assert r.json()["seats"]["payment_due"] is expected, status

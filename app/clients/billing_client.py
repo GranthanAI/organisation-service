@@ -32,6 +32,7 @@ class Subscription:
     status: str
     period_end: datetime | None
     subscription_id: str | None = None
+    pending_seats: int | None = None
 
 
 class RouteMissing(Exception):
@@ -93,9 +94,9 @@ class BillingClient:
         the route does not exist in billing yet (a 404 that is not about an organisation)."""
         response = await self._get("subscription", f"/internal/orgs/{org_id}/subscription", None, SUBSCRIPTION_TIMEOUT_SECONDS)
         if response.status_code == 404:
-            if _is_unknown_route(response):
-                raise RouteMissing()
-            raise NoSubscription()
+            if _problem_code(response) == "NO_SUBSCRIPTION":      # billing's own answer: this organisation has no live subscription
+                raise NoSubscription()
+            raise RouteMissing()                                   # any other 404: billing has not built the route (yet)
         if response.status_code != 200:
             logger.warning("billing answered the subscription with an error", status=response.status_code)
             raise UpstreamUnavailable("billing-service could not answer")
@@ -104,23 +105,16 @@ class BillingClient:
         return Subscription(
             plan_code=body["plan_code"], variant=body.get("variant"), seats=body.get("seats"), status=body["status"],
             period_end=datetime.fromisoformat(period_end.replace("Z", "+00:00")) if period_end else None,
-            subscription_id=body.get("subscription_id") or body.get("id"))
+            subscription_id=body.get("subscription_id") or body.get("id"), pending_seats=body.get("pending_seats"))
 
 
-def _is_unknown_route(response: httpx.Response) -> bool:
-    """billing's 404 for a path it does not have is the framework's plain {"detail": "Not Found"} (or problem+json
-    NOT_FOUND without any organisation named); its 404 for an unknown or unsubscribed organisation names the organisation."""
+def _problem_code(response: httpx.Response) -> str:
+    """The `code` of a problem+json answer, or "" when the body is anything else (plain framework 404s, HTML, empty)."""
     try:
         body = response.json()
     except ValueError:
-        return True
-    if not isinstance(body, dict):
-        return True
-    detail = str(body.get("detail", "")).lower()
-    code = str(body.get("code", "")).upper()
-    if "organisation" in detail or "organization" in detail or "subscription" in detail or "org" in code:
-        return False
-    return detail in ("not found", "") or code in ("NOT_FOUND", "")
+        return ""
+    return str(body.get("code", "")).upper() if isinstance(body, dict) else ""
 
 
 def get_billing_client() -> BillingClient:

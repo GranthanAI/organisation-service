@@ -44,7 +44,7 @@ from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.security.models import CurrentUser, OrgContext
 from app.security.tokens import hash_token, invite_token_hash
-from app.services import audit_service, domain_rules, job_service, join_service
+from app.services import audit_service, domain_rules, job_service, join_service, seat_rules
 from app.services.email_rules import normalize_email
 from app.telemetry.metrics import INVITES_CREATED
 from app.utils.ids import uuid7
@@ -124,6 +124,7 @@ class SeatsInfo:
     bought: int | None
     open_invites: int
     warning: bool     # used + open invites > bought: only informs, acceptance enforces the seats
+    payment_due: bool = False   # past_due or suspended: invites are allowed, but nobody can ACCEPT until it is sorted out
 
 
 async def seats_info(session: AsyncSession, org_id: uuid.UUID, now: datetime) -> SeatsInfo:
@@ -131,7 +132,8 @@ async def seats_info(session: AsyncSession, org_id: uuid.UUID, now: datetime) ->
     used = await MembershipRepository(session).count_active(org_id)
     open_invites = await InviteRepository(session).count_open(org_id, now)
     bought = None if seat is None or seat.status in NO_SEATS else seat.seats_bought
-    return SeatsInfo(used, bought, open_invites, bought is not None and used + open_invites > bought)
+    return SeatsInfo(used, bought, open_invites, bought is not None and used + open_invites > bought,
+                     seat is not None and seat_rules.refuses_new_joins(seat.status))
 
 
 async def create_invites(session: AsyncSession, ctx: OrgContext, emails: list[str], role: str,

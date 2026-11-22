@@ -27,6 +27,7 @@ class MeSeats(BaseModel):
     used: int
     bought: int | None        # null for pay as you go, and while seats are incomplete or ended
     over_by: int              # 0 if not over
+    pending: int | None = None   # a seat decrease billing will apply at the period end
 
 
 class MeFeatures(BaseModel):
@@ -143,6 +144,7 @@ class SeatsInfoOut(BaseModel):
     bought: int | None
     open_invites: int
     warning: bool
+    payment_due: bool = False
 
 
 class CreateInvitesOut(BaseModel):
@@ -199,6 +201,7 @@ class CsvSeatsOut(BaseModel):
     used: int
     bought: int | None
     open_invites: int
+    payment_due: bool = False
 
 
 class CsvUploadOut(BaseModel):

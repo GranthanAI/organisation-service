@@ -78,7 +78,7 @@ async def join(
     decision = seat_rules.can_join(
         OrgStatus(org.status), 0 if no_seats else seat_state.seats_bought, active_count,
         is_pilot=org.status == OrgStatus.PILOT.value, pilot_max_members=settings.PILOT_MAX_MEMBERS,
-        payment_due=seat_state is not None and seat_state.status == SeatStatus.PAST_DUE.value)
+        payment_due=seat_state is not None and seat_rules.refuses_new_joins(seat_state.status))
     first_owner = role is Role.OWNER and active_owners == 0
     if decision is JoinDecision.SEATS_FULL and first_owner and no_seats:
         decision = JoinDecision.OK     # seats are bought after the owner exists
