@@ -550,7 +550,13 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 
 **Goal:** a college uploads its student list, or shares one link, instead of typing emails.
 
-- **P8a: Upload and validation.** `POST /org/v1/orgs/{id}/invites/csv` takes multipart `file`, with optional `role=member`.
+> **DESIGN CHANGE (Phase 8, wins over P8a-P8c below).** The CSV is validated AND its invites are created inside the upload
+> request, in ONE transaction. Only email sending is in the background (one `invite.send` job per invite, throttled by the
+> global send rate `EMAIL_SENDS_PER_MINUTE`). There is **no `csv.send` creation job and no resume logic**. The uploaded file
+> is never stored; only the error rows are kept (on the batch, purged after 90 days). Migration `0008_csv_and_links`:
+> `invites.invitee_name`, `invite_batches.dry_run`. Details: lld.md §3e.
+
+- **P8a: Upload and validation.** `POST /org/v1/orgs/{id}/invites/csv` takes multipart `file`, with optional `role=member` and `dry_run=false`.
   - Limits: `CSV_MAX_BYTES` and `CSV_MAX_ROWS`; UTF-8 with or without BOM; header row required with column `email` and optional `name`, `role`.
   - Validation runs at once, before anything is sent. Each failing row is reported with its row number and reason:
     - `invalid_email`;
@@ -561,12 +567,12 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
     - `role_not_allowed`;
     - `over_seats`, for rows beyond free seats.
   - The response is `{batch_id, rows_total, rows_ok, rows_failed, errors_preview: [first 20]}`.
-- **P8b: Sending in the background.** Job `csv.send` creates invites (`kind='csv'`, `batch_id`) in chunks of 200, one transaction per chunk, with one `org.invite.created` per invite. It updates the batch counters and can resume if the process restarts.
+- **P8b: Sending in the background.** (Changed: no `csv.send`.) The upload itself bulk-inserts the invites (`kind='csv'`, `batch_id`, ON CONFLICT DO NOTHING on the open-invite index), one `org.invite.created` and one `invite.send` job per invite, and one audit row `invite.csv_uploaded`. The recurring job `csv.batches.finish` (every minute) marks a sending batch `done` once every live invite of it has been sent.
 - **P8c: Batch status.**
-  - `GET /org/v1/invite-batches/{batch_id}`: progress.
+  - `GET /org/v1/invite-batches/{batch_id}`: progress `{batch_id, status, dry_run, rows_total, rows_ok, rows_failed, sent, pending_send, created_at, finished_at}`.
   - `GET /org/v1/invite-batches/{batch_id}/errors.csv`: the error report. Every cell goes through `utils/csv_safe.py`, which prefixes `'` to cells starting with `=`, `+`, `-`, `@`, tab or CR.
 - **P8d: Invite links.**
-  - `POST /org/v1/orgs/{id}/invite-links` `{max_uses (1–5000), expires_in_days (≤ LINK_MAX_TTL_DAYS), domain_restricted: bool}` returns the URL once. The role is always `member`.
+  - `POST /org/v1/orgs/{id}/invite-links` `{max_uses (1–5000), expires_in_days (≤ LINK_MAX_TTL_DAYS), domain_restricted: bool}` returns `{link_id, url, max_uses, expires_at, domain_restricted}`. The role is always `member`. (Changed: the URL is derived like every invite token, so `GET …/invite-links/{id}/url` shows it again to an admin, audited; the list never has it.)
   - `GET …/invite-links` lists links without tokens.
   - `DELETE …/invite-links/{id}` revokes.
 - **P8e: Accepting a link.** It uses the same accept route. For a link, the email isn't bound; if `domain_restricted`, the JWT email's domain must be one of the org's verified domains. `uses` is incremented inside the join transaction, and a link past `max_uses` gets `INVITE_INVALID`.
@@ -684,5 +690,5 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 | api-gateway | Route `/org/v1/*` and `/admin/org/v1/*` to `ORGANISATION_SERVICE_URL=http://127.0.0.1:8010`, **forwarding the `Authorization` header** (organisation-service verifies the JWT itself); make `GET /org/v1/invites/preview` a public path (exact match, Phase 7); **never route `/internal/*`** (those are service-to-service, with service tokens) | Phase 6 (the routes exist now) |
 | auth-service | Keep `user-events` and `user.deleted` shapes stable; long term, add `email_verified` to the JWT | Phase 9 |
 | granthan-frontend | `/join/<token>` page that keeps the token through signup; org admin pages for members, invites, CSV upload with error report, links, domains, policies, usage, audit | Phases 6–10 |
-| notification-service (new) | Consume `org.invite.created` and `org.pilot.ending`; then set `INVITE_EMAILS_VIA=notification` here. `org.invite.created` has no link, so organisation-service must first get an **internal route that returns the accept link for an invite** (e.g. `GET /internal/invites/{invite_id}/accept-url`, service token, derives the token for the current `token_version`; **not built yet**) | After Phase 10 |
+| notification-service (new) | Consume `org.invite.created` (also emitted per CSV row) and `org.pilot.ending`; then set `INVITE_EMAILS_VIA=notification` here. `org.invite.created` has no link, so organisation-service must first get an **internal route that returns the accept link for an invite** (e.g. `GET /internal/invites/{invite_id}/accept-url`, service token, derives the token for the current `token_version`; **not built yet**) | After Phase 10 |
 | conversation-service | Consume `org.policy.changed` and `org.member.left` for mode locking and shared projects | Release plan Phase 3 |

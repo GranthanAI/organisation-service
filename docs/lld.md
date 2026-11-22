@@ -183,6 +183,39 @@ The raw invite token is **never stored, logged or put in an event**. `invite_tok
 ### Audit view and joins (M1, M2)
 The org audit view shows staff rows with `actor_id` null and `actor_label` "GranthanAI staff", system and service rows "GranthanAI", user rows their id and name or email. `join()` refuses a user with no `known_users` row: 422 `UNKNOWN_USER` (a deleted user stays 404).
 
+## 3e. Phase 8: CSV bulk invites and invite links [built]
+
+**Design change from PHASES.md P8a-P8c:** the CSV is validated AND its invites are created inside the upload request, in one transaction. Only email sending is in the background. No `csv.send` job, no resume logic. The uploaded file is never stored; only the error rows are kept.
+
+### Migration `0008_csv_and_links`
+`invites.invitee_name` text NULL (the CSV `name` column; cleared by `invites.purge` together with the email), `invite_batches.dry_run` boolean NOT NULL DEFAULT false. No new index: EXPLAIN on 42,000 invites showed every Phase 8 query on an existing index (`ix_invites_batch`, `ix_invites_org_created`, `ux_invites_open_email`). Downgrade drops both columns.
+
+### Upload (`POST /org/v1/orgs/{id}/invites/csv`, INVITE, multipart `file`, `role` default member, `dry_run` default false)
+Bucket `csv_upload` (5 an hour, fail closed). Org must be pilot or active (`ORG_INACTIVE`). A whole-upload `role=admin` needs the owner (403 `FORBIDDEN_ROLE`); a row-level admin from a non-owner is `role_not_allowed`.
+- **File** (`services/csv_parse.py`): at most `CSV_MAX_BYTES` and `CSV_MAX_ROWS` data rows (422 `CSV_INVALID`, the limit in the detail); decoded as `utf-8-sig` only (anything else: "save the file as CSV UTF-8"); comma delimiter; header row required; header names trimmed and case-insensitive: `email` (required), `name`, `role`; unknown columns ignored; blank lines skipped; CRLF and LF; quoted fields. Row numbers are spreadsheet rows (header = 1).
+- **Row checks, in order** (each failing row is `{row, email, reason}`): `invalid_email`, `duplicate_in_file`, `role_not_allowed`, `already_member`, `in_another_org` (never names the org), `open_invite_exists` (after closing this org's expired open invites for those emails, the H4 rule), `over_seats`.
+- **over_seats:** `free = cap - active members - open email/CSV invites` (links hold no seat); valid rows beyond `free`, in file order, are `over_seats`. `cap` is `seats_bought`; payg (active, no number) has no cap; incomplete or ended seats (or no seat row) mean every valid row is `over_seats`; a pilot is also capped at `PILOT_MAX_MEMBERS`. Acceptance still enforces the seats (a join can fail with `SEATS_FULL`).
+- **Daily limit:** `CSV_ROWS_PER_ORG_PER_DAY` (5000) rows created by uploads per org per UTC day; an upload (or dry run) that would cross it is 429 `RATE_LIMITED` as a whole. Separate from `INVITES_PER_ORG_PER_DAY`, which counts single (email) invites only.
+- **dry_run:** writes only the `invite_batches` row (status `done`, `dry_run` true, errors kept) and returns the report.
+- **Real upload, one transaction:** the batch row; the invites bulk-inserted (`kind csv`, `batch_id`, `invitee_name`, `token_version 1`, derived hash) with `ON CONFLICT DO NOTHING` on `ux_invites_open_email` (rows lost to a race become `open_invite_exists`); one `org.invite.created` per invite; one `invite.send` job per invite (none when `INVITE_EMAILS_VIA=notification`, then the batch is `done` at once); one audit row `invite.csv_uploaded {batch_id, rows_total, rows_ok, rows_failed}`. Batch status `sending` (or `done` when nothing is to be sent).
+- **Response 200:** `{batch_id, dry_run, rows_total, rows_ok, rows_failed, errors_preview (first 20), seats: {used, bought, open_invites}}`. A multipart body is fingerprinted with its boundary normalised, so a retry with the same `Idempotency-Key` replays.
+
+### Batches (`GET /org/v1/invite-batches/{id}`, `.../errors.csv`; VIEW_INVITES in the batch's org, not a member: 404)
+`sent` = invites of the batch with `last_sent_at`; `pending_send` = live ones (not revoked, accepted or expired) not yet sent. The recurring job `csv.batches.finish` (every minute) sets `done` + `finished_at` once nothing is pending. `errors.csv`: columns `row,email,reason`, every cell through `utils/csv_safe.py` (`'` before `=`, `+`, `-`, `@`, tab or CR), `text/csv; charset=utf-8` with a BOM, `Content-Disposition: attachment; filename="invite-errors-<batch_id>.csv"`. `invites.purge` also clears `invite_batches.errors` older than 90 days (counts stay).
+
+### Invite links (INVITE; list needs VIEW_INVITES)
+| Route | Notes |
+| --- | --- |
+| `POST /org/v1/orgs/{id}/invite-links {max_uses 1-5000, expires_in_days 1-LINK_MAX_TTL_DAYS, domain_restricted}` | pilot/active only; role always member; `domain_restricted` needs a VERIFIED `org_domains` row (422 "verify a domain first"); an `invites` row `kind link`, email NULL, derived token (same HMAC scheme); audit `invite_link.created`; no event, no email; returns `{link_id, url, max_uses, expires_at, domain_restricted}` |
+| `GET /org/v1/orgs/{id}/invite-links` | `{link_id, created_by, created_at, expires_at, max_uses, uses, domain_restricted, status open\|used_up\|expired\|revoked}`; never the URL |
+| `GET /org/v1/orgs/{id}/invite-links/{link_id}/url` | recomputes the URL; open links only (else 404 `INVITE_INVALID`); audit `invite_link.url_viewed` |
+| `DELETE /org/v1/orgs/{id}/invite-links/{link_id}` | revoke (`revoke_reason revoked`), 204; already closed is a no-op 204 |
+
+Accepting a link (same `POST /org/v1/invites/accept`): no email binding; domain-restricted: the JWT email domain must be a verified domain of that org, else 403 `INVITE_EMAIL_MISMATCH`; the invite row is locked and re-read fresh (`populate_existing`); `uses >= max_uses` is 404 `INVITE_INVALID`, expired 410; then `join(source=link, role=member)` which counts the use and does NOT set `accepted_at` or `accepted_by`. The same user retrying (an active membership in the org with source `link`) gets 200 with the same body. Preview of a link: `email_hint` null; a used-up link is 404. The email-invite list (`GET .../invites`) no longer shows links.
+
+### Global email send rate (N1; `services/email_throttle.py`)
+`invite.send` takes a token from the Redis fixed-window counter `org:email_send:<minute>` before sending; over `EMAIL_SENDS_PER_MINUTE` (60) the job is DEFERRED to the next minute (`DeferJob`: `run_at` moved, no attempt, no failure). Skipped invites take no token. Redis down: one email a second in this process, with a warning. Metrics `org_email_sent_total`, `org_email_deferred_total`.
+
 ## 4. Events and workers [P4: built]
 
 ### Envelope
@@ -219,7 +252,7 @@ In the caller's transaction: (1) load the active membership, else `NotFound`; (2
 - Claims due jobs (`run_at <= now`, not done, `locked_until` null or past) with `FOR UPDATE SKIP LOCKED`, sets `locked_until = now + 5 min`, and runs the handler registered for the `kind` in its own transaction (effects and `done_at` commit together).
 - Failure: `attempts + 1`, `last_error`, `run_at` pushed back with exponential backoff. After 8 attempts the job is closed with `last_error` starting `gave up` and counted in `org_jobs_failed_total{kind}`.
 - `schedule(session, kind, run_at, payload, dedupe_key=None)`; `ensure_recurring(session, kind, every, clock)` keeps ONE open job per kind (`dedupe_key = "recurring:<kind>"`, interval in the payload; the runner schedules the next run after each run, including after a give-up). Startup calls it, so it is idempotent.
-- Registered jobs: `idempotency.cleanup` (hourly: delete `idempotency_keys` older than 24 h), `processed_events.cleanup` (daily: older than 30 days), `outbox.cleanup` (daily: published more than 7 days ago; unpublished rows are never deleted). Phase 5+ adds pilot, invite and domain jobs to the same registry.
+- Registered jobs: `csv.batches.finish` (every minute, Phase 8), `idempotency.cleanup` (hourly: delete `idempotency_keys` older than 24 h), `processed_events.cleanup` (daily: older than 30 days), `outbox.cleanup` (daily: published more than 7 days ago; unpublished rows are never deleted). Phase 5+ adds pilot, invite and domain jobs to the same registry.
 
 ### Workers at startup (`workers/manager.py`)
 With `WORKERS_ENABLED=true`, `main.py` starts the outbox relay, the consumer worker and the job runner as supervised asyncio tasks. A crash is logged and the worker restarts after 5 s; the API is never affected and `/ready` does not depend on workers (`org_worker_up{worker}` gauge shows 1/0). On shutdown the stop event is set, workers get 10 s, then they are cancelled and the Kafka clients closed.
@@ -323,7 +356,7 @@ Redis fixed windows (`rl:<bucket>:<who>:<window>`), `INCR` and `EXPIRE` in one p
 
 ## 8. Settings
 
-See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `SERVICE_PORT=8010`, `DATABASE_URL`, `DB_*`, `REDIS_URL`, `KAFKA_*`), identity (`JWT_*`, `INTERNAL_SERVICE_TOKENS`), billing (`BILLING_BASE_URL`, `BILLING_SERVICE_TOKEN`), `WORKERS_ENABLED`, email (`EMAIL_SENDER`, `SMTP_*`, `APP_BASE_URL`), invites (`INVITE_TTL_DAYS`, `LINK_MAX_TTL_DAYS`, `INVITES_PER_ORG_PER_DAY`, `INVITE_TOKEN_SECRET`, `INVITE_EMAILS_VIA`, `CSV_MAX_*`), pilots and seats (`PILOT_MAX_MEMBERS`, `PILOT_DAYS`, `SEAT_SOURCE`), `DOMAIN_AUTO_JOIN_ENABLED`. Production refuses dev defaults (`Settings._production_problems`).
+See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `SERVICE_PORT=8010`, `DATABASE_URL`, `DB_*`, `REDIS_URL`, `KAFKA_*`), identity (`JWT_*`, `INTERNAL_SERVICE_TOKENS`), billing (`BILLING_BASE_URL`, `BILLING_SERVICE_TOKEN`), `WORKERS_ENABLED`, email (`EMAIL_SENDER`, `SMTP_*`, `APP_BASE_URL`), invites (`INVITE_TTL_DAYS`, `LINK_MAX_TTL_DAYS`, `INVITES_PER_ORG_PER_DAY`, `CSV_ROWS_PER_ORG_PER_DAY`, `EMAIL_SENDS_PER_MINUTE`, `INVITE_TOKEN_SECRET`, `INVITE_EMAILS_VIA`, `CSV_MAX_*`), pilots and seats (`PILOT_MAX_MEMBERS`, `PILOT_DAYS`, `SEAT_SOURCE`), `DOMAIN_AUTO_JOIN_ENABLED`. Production refuses dev defaults (`Settings._production_problems`).
 
 ## 9. Defaults D1-D6
 
