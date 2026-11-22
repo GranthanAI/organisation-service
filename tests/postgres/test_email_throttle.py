@@ -91,7 +91,7 @@ async def test_a_deferral_is_not_an_attempt_or_a_failure(session_factory, clock,
     assert len(mail.sent) == 1
     deferred = [j for j in await sends(session_factory) if j.done_at is None]
     assert len(deferred) == 2 and all(j.attempts == 0 and j.last_error is None and j.locked_until is None for j in deferred)
-    for minute in range(2):                                        # one more email each minute, never a failure
+    for _minute in range(2):                                        # one more email each minute, never a failure
         clock.advance(seconds=60)
         while await JobRunner(session_factory, None, clock, poll_seconds=0.05).run_once():
             pass
