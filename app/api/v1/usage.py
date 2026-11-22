@@ -11,8 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_clock, get_db_session
 from app.core.clock import Clock
-from app.core.exceptions import NotFound
-from app.repositories.org_repository import OrgRepository
 from app.schemas.org_v1 import UsageMemberOut, UsageOut, UsageTotalsOut
 from app.security.dependencies import require_org_role
 from app.security.models import OrgContext
@@ -28,12 +26,10 @@ async def usage(from_: date = Query(alias="from"), to: date = Query(), format: L
                 session: AsyncSession = Depends(get_db_session), clock: Clock = Depends(get_clock)):
     report = await usage_service.usage_report(session, ctx.org_id, from_, to, clock)
     if format == "csv":
-        org = await OrgRepository(session).get(ctx.org_id)
-        if org is None:
-            raise NotFound("Organisation not found")
+        slug = await usage_service.org_slug(session, ctx.org_id)
         content = await asyncio.to_thread(usage_service.render_csv, report)
         return Response(content=content, media_type="text/csv; charset=utf-8", headers={
-            "Content-Disposition": f'attachment; filename="{usage_service.filename(org.slug, from_, to)}"'})
+            "Content-Disposition": f'attachment; filename="{usage_service.filename(slug, from_, to)}"'})
     return UsageOut(
         **{"from": report.start, "to": report.end},
         totals=UsageTotalsOut(messages=report.messages, billable_units=report.billable_units, by_model_group=report.by_model_group),

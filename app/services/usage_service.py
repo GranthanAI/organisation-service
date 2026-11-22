@@ -17,9 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.billing_client import BillingClient, get_billing_client
 from app.core.clock import Clock, system_clock
-from app.core.exceptions import FeatureNotInPlan, ValidationFailed
+from app.core.exceptions import FeatureNotInPlan, NotFound, ValidationFailed
 from app.repositories.known_user_repository import KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
+from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.services.me_service import features_for
 from app.utils.csv_safe import safe_cell
@@ -115,6 +116,13 @@ def render_csv(report: UsageReport) -> bytes:
 
 async def render_csv_in_thread(report: UsageReport) -> bytes:
     return await asyncio.to_thread(render_csv, report)
+
+
+async def org_slug(session: AsyncSession, org_id: uuid.UUID) -> str:
+    org = await OrgRepository(session).get(org_id)
+    if org is None:
+        raise NotFound("Organisation not found")
+    return org.slug
 
 
 def filename(org_slug: str, start: date, end: date) -> str:
