@@ -590,6 +590,15 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 
 **Goal:** a company or college verifies its email domain, so staff with that domain can join without an invite.
 
+> **DESIGN (Phase 9, wins over the list below).** Details in lld.md §3f. Domains can include subdomains (`include_subdomains`); a
+> verified domain belongs to one organisation and verified domains never overlap (same domain, a verified parent that includes
+> subdomains, or a verified child: `DOMAIN_TAKEN`). One matching rule for everything (`candidate_domains` + `find_verified_owner`,
+> longest match wins). DNS: TXT `granthan-verify=<token>` at the domain root, checked hourly for 7 days, re-checked every 30
+> days (3 misses remove the verification); staff can verify by hand and those are never rechecked. Auto-join runs on the
+> `EmailVerified` event only, for that one user, never retroactively; a full org gets a join request instead. Existing users
+> find their org with `GET /org/v1/me/domain-match` and `POST /org/v1/join-requests`. Request-size limit and event-loop rules:
+> lld.md §3g.
+
 - **P9a: Adding a domain.** `POST /org/v1/orgs/{id}/domains` `{domain}`:
   - refuses public mail domains (`PUBLIC_EMAIL_DOMAIN`), and domains already verified by another org (`DOMAIN_TAKEN`);
   - creates `verify_token`, and returns the DNS TXT record to add: `granthan-verify=<token>` at the domain root.
@@ -612,7 +621,7 @@ If billing can't be started, run `tests/api/test_internal_routes.py` against bil
 - **P9e: Listing and removing.** `GET …/domains`, and `DELETE …/domains/{domain}`. Removing a domain doesn't remove members.
 
 **Tests:**
-- `tests/unit/test_domain_rules.py`.
+- `tests/unit/test_domain_rules.py`. (Built tests: see reports/P9-report.md.)
 - `tests/postgres/test_domain_verify.py`: TXT found, not found, timeout; staff manual verify; one org per domain.
 - `tests/postgres/test_auto_join.py`: verified domain with a free seat joins; full org makes a join request; flag off does nothing; `UserRegistered` alone does nothing; a user already in an org is skipped.
 - `tests/api/test_domains_api.py`: gmail.com refused.

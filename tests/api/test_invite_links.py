@@ -344,3 +344,38 @@ async def test_preview_and_accept_of_a_link_in_an_inactive_org_are_refused(api):
     assert (await api.client.get(PREVIEW, params={"token": token})).status_code == 404
     r = await accept(api, token, (await user(api))[1])
     assert r.status_code == 409 and r.json()["code"] == "ORG_INACTIVE"
+
+
+async def test_a_domain_restricted_link_uses_the_matching_rules_for_subdomains(api):
+    world = await api.seed_org()
+    await verify_domain(api, world, "amity.edu")
+    token = token_of((await make_link(api, world, who=world.owner, domain_restricted=True))["url"])
+    assert (await accept(api, token, (await user(api, "x@cse.amity.edu"))[1])).status_code == 403          # exact domain only
+    async with unit_of_work(api.sf) as s:
+        (await s.get(OrgDomain, (world.org.id, "amity.edu"))).include_subdomains = True
+    deep = await accept(api, token, (await user(api, "y@cse.student.amity.edu"))[1])
+    assert deep.status_code == 200                                                                          # any depth once included
+    assert (await accept(api, token, (await user(api, "z@notamity.edu"))[1])).status_code == 403            # still not a look-alike
+
+
+async def test_a_restricted_link_refuses_an_email_that_belongs_to_another_orgs_domain(api):
+    world, other = await api.seed_org(), await api.seed_org()
+    await verify_domain(api, world, "amity.edu")
+    await verify_domain(api, other, "rival.edu")
+    token = token_of((await make_link(api, world, who=world.owner, domain_restricted=True))["url"])
+    r = await accept(api, token, (await user(api, "x@rival.edu"))[1])
+    assert r.status_code == 403 and r.json()["code"] == "INVITE_EMAIL_MISMATCH"
+
+
+async def test_the_longest_match_decides_which_org_a_restricted_link_serves(api):
+    parent, child = await api.seed_org(), await api.seed_org()
+    async with unit_of_work(api.sf) as s:
+        s.add(OrgDomain(org_id=parent.org.id, domain="amity.edu", verify_token="t" * 43, verified_at=NOW, verify_method="dns",
+                        auto_join=False, include_subdomains=True, failed_checks=0, added_at=NOW))
+        s.add(OrgDomain(org_id=child.org.id, domain="cse.amity.edu", verify_token="u" * 43, verified_at=NOW, verify_method="dns",
+                        auto_join=False, include_subdomains=False, failed_checks=0, added_at=NOW))
+    parent_link = token_of((await make_link(api, parent, who=parent.owner, domain_restricted=True))["url"])
+    child_link = token_of((await make_link(api, child, who=child.owner, domain_restricted=True))["url"])
+    _, student = await user(api, "a@cse.amity.edu")
+    assert (await accept(api, parent_link, student)).status_code == 403                                      # cse.amity.edu is the child's
+    assert (await accept(api, child_link, student)).status_code == 200

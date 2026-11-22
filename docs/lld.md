@@ -216,6 +216,46 @@ Accepting a link (same `POST /org/v1/invites/accept`): no email binding; domain-
 ### Global email send rate (N1; `services/email_throttle.py`)
 `invite.send` takes a token from the Redis fixed-window counter `org:email_send:<minute>` before sending; over `EMAIL_SENDS_PER_MINUTE` (60) the job is DEFERRED to the next minute (`DeferJob`: `run_at` moved, no attempt, no failure). Skipped invites take no token. Redis down: one email a second in this process, with a warning. Metrics `org_email_sent_total`, `org_email_deferred_total`.
 
+## 3f. Phase 9: email domains, auto-join and join requests [built]
+
+### Migration `0009_domains`
+`org_domains`: `include_subdomains` bool NOT NULL DEFAULT false, `failed_checks` int NOT NULL DEFAULT 0 (CHECK >= 0), `last_checked_at`, `added_at` (NOT NULL, default now()); `verify_method IN ('dns','staff')` already existed (0003). `invite_batches`: status CHECK adds `stopped`, new `errors_note`. No new index: `find_verified_owner` (the hot path) uses `ux_org_domains_verified`; the other lookups scan a table of about 10 rows per organisation. Downgrade maps `stopped` back to `done` and drops the columns.
+
+### Matching an email to an organisation (`services/domain_rules.py`, `DomainRepository.find_verified_owner`)
+`candidate_domains("a@cse.student.amity.edu")` = `[cse.student.amity.edu, student.amity.edu, amity.edu]` (longest first, never the bare TLD). `find_verified_owner(email_domain)` returns `(org_id, domain, auto_join)` for the verified domain equal to it, or a verified parent with `include_subdomains`; the longest match wins. Used by auto-join, `me/domain-match`, join requests and domain-restricted invite links.
+
+### Routes (`/org/v1`; DOMAINS = owner and admin; writes use `IdempotentRoute`)
+| Route | Notes |
+| --- | --- |
+| `POST /orgs/{id}/domains {domain, include_subdomains}` | pilot/active only. Normalised (lower-case, no trailing dot, ASCII/punycode). `PUBLIC_EMAIL_DOMAIN` for a public mail domain or a subdomain of one; `DOMAIN_TAKEN` if verified by ANY org (same domain, a verified parent with subdomains, or a verified child); 422 for the 11th domain and for a domain this org already has. A domain another org only ADDED is allowed. 201 `{domain, status pending, include_subdomains, dns_record {TXT, host @, value granthan-verify=<token>}, instructions}`; token = 32 random bytes base64url; audit `domain.added` (never the token) |
+| `GET /orgs/{id}/domains` | any member; never the token; owner and admin also see `dns_record` of pending domains |
+| `PATCH /orgs/{id}/domains/{domain} {auto_join?, include_subdomains?}` | `auto_join` needs the domain verified; turning `include_subdomains` on for a verified domain re-checks `DOMAIN_TAKEN`; audit `domain.updated` |
+| `DELETE /orgs/{id}/domains/{domain}` | 204; members stay; audit `domain.removed` |
+| `POST /orgs/{id}/domains/{domain}/verify` | checks DNS once; 10 an hour per org+domain (fails open, 429); found: `verified_at`, `verified_by`, method dns, audit `domain.verified`; not found: **409 `VALIDATION_ERROR` "TXT record not found yet"** with `dns_record` in the body; the unique index losing a race: `DOMAIN_TAKEN` |
+| `POST /admin/org/v1/orgs/{id}/domains/{domain}/manual-verify {reason}` | staff admin (STAFF_MANUAL_DOMAIN_VERIFY); method `staff`, same ownership rules, audit with the reason |
+| `GET /me/domain-match` | no org, VERIFIED email (`known_users.email_verified_at`), domain matches a verified domain of a pilot/active org: `{org_id, org_name, org_type, can_request, pending_request_id?}`, else 404 |
+| `POST /join-requests` | the same checks; `JOIN_REQUEST_PENDING`, `ALREADY_IN_ORG`; audit `join_request.created` |
+| `DELETE /join-requests/{id}` | the requester withdraws: `declined`, `decided_by` = self; closed ones are a quiet 204 |
+| `GET /orgs/{id}/join-requests?status=pending&cursor=&limit=` | MANAGE_JOIN_REQUESTS; oldest first, keyset; name and email from `known_users` |
+| `POST /orgs/{id}/join-requests/{id}/approve` | locks the request, `join(source=domain)` (seat rules; a refusal leaves it pending and passes through), then `approved`; audit |
+| `POST /orgs/{id}/join-requests/{id}/decline` | `declined`; audit |
+
+DNS (`clients/dns_client.py`): a `DnsClient` port, `DnsPythonClient` (async, 3 s, `DNS_NAMESERVERS` optional) and `FakeDns` in tests. A TXT record matches when its strings, joined, equal `granthan-verify=<token>`. NXDOMAIN, no answer and timeouts all mean "not found"; only timeouts and SERVFAIL count as `error` in `org_domain_checks_total{result=found|not_found|error}`.
+
+### Jobs
+`domains.verify` (hourly): pending domains added in the last 7 days; after that they stay pending (manual verify still works). `domains.recheck` (daily): DNS-verified domains whose `last_checked_at` is older than 30 days; found: `failed_checks` 0; not found: +1, at 3 `verified_at` NULL, `auto_join` false, audit `domain.unverified`; staff-verified domains are never rechecked. `join_requests.expire` (daily): pending requests older than 30 days become `expired`.
+
+### Auto-join (`join_request_service.auto_join_on_email_verified`, the `on_email_verified` hook)
+Only when `DOMAIN_AUTO_JOIN_ENABLED=true`, from the `EmailVerified` event (never `UserRegistered`), inside the handler transaction (deduplicated by `processed_events`): the user is not deleted, has `email_verified_at`, has no active membership, and the email matches a verified domain with `auto_join` of a pilot or active org: `join(source=domain, role=member)`. `SEATS_FULL` or `PILOT_FULL` makes a pending join request instead (already pending: no-op); any other refusal is logged and ignored. It looks at ONE user: verifying a domain or switching `auto_join` on never adds existing users (they use `me/domain-match`). `join()` also declines the user's pending requests (`decided_by` null) whenever they join any organisation.
+
+### Domain-restricted invite links
+`domain_restricted` now uses the same matching rule: the JWT email's domain must resolve (`find_verified_owner`) to the link's organisation, so subdomains work only with `include_subdomains`.
+
+## 3g. Request size and the event loop (O1, O2, O3)
+- **Request size** (`middleware/request_size.py`, outside every route): `MAX_REQUEST_BYTES` (262144) for every route, `CSV_MAX_BYTES + 65536` for the CSV upload. A Content-Length over the limit is 413 `REQUEST_TOO_LARGE` (problem+json) before any route code runs; without one the bytes are counted while streaming and the request is cut off with 413.
+- **Event loop:** CPU-only work (CSV decode and parse, per-row checks, token hashing, event and outbox building, errors.csv) runs in `asyncio.to_thread`; database work stays async, batched (one query per check for all emails) and bulk inserts go in chunks of 50 with a yield between them. The gauge `org_event_loop_lag_seconds` is set every 0.5 s by a task started with the app.
+- **Batch end states:** `csv.batches.finish` ends a `sending` batch as `done` (every invite sent), `stopped` with `errors_note` "org inactive" (something unsent and the org is not pilot/active) or `stopped` with "invites closed" (every unsent invite is revoked, accepted or expired). A stopped batch is never resumed. Batch status shows `sent`, `pending_send`, `not_sent`.
+
 ## 4. Events and workers [P4: built]
 
 ### Envelope
@@ -252,7 +292,7 @@ In the caller's transaction: (1) load the active membership, else `NotFound`; (2
 - Claims due jobs (`run_at <= now`, not done, `locked_until` null or past) with `FOR UPDATE SKIP LOCKED`, sets `locked_until = now + 5 min`, and runs the handler registered for the `kind` in its own transaction (effects and `done_at` commit together).
 - Failure: `attempts + 1`, `last_error`, `run_at` pushed back with exponential backoff. After 8 attempts the job is closed with `last_error` starting `gave up` and counted in `org_jobs_failed_total{kind}`.
 - `schedule(session, kind, run_at, payload, dedupe_key=None)`; `ensure_recurring(session, kind, every, clock)` keeps ONE open job per kind (`dedupe_key = "recurring:<kind>"`, interval in the payload; the runner schedules the next run after each run, including after a give-up). Startup calls it, so it is idempotent.
-- Registered jobs: `csv.batches.finish` (every minute, Phase 8), `idempotency.cleanup` (hourly: delete `idempotency_keys` older than 24 h), `processed_events.cleanup` (daily: older than 30 days), `outbox.cleanup` (daily: published more than 7 days ago; unpublished rows are never deleted). Phase 5+ adds pilot, invite and domain jobs to the same registry.
+- Registered jobs: `domains.verify` (hourly), `domains.recheck` and `join_requests.expire` (daily) (Phase 9), `csv.batches.finish` (every minute, Phase 8), `idempotency.cleanup` (hourly: delete `idempotency_keys` older than 24 h), `processed_events.cleanup` (daily: older than 30 days), `outbox.cleanup` (daily: published more than 7 days ago; unpublished rows are never deleted). Phase 5+ adds pilot, invite and domain jobs to the same registry.
 
 ### Workers at startup (`workers/manager.py`)
 With `WORKERS_ENABLED=true`, `main.py` starts the outbox relay, the consumer worker and the job runner as supervised asyncio tasks. A crash is logged and the worker restarts after 5 s; the API is never affected and `/ready` does not depend on workers (`org_worker_up{worker}` gauge shows 1/0). On shutdown the stop event is set, workers get 10 s, then they are cancelled and the Kafka clients closed.
@@ -356,7 +396,7 @@ Redis fixed windows (`rl:<bucket>:<who>:<window>`), `INCR` and `EXPIRE` in one p
 
 ## 8. Settings
 
-See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `SERVICE_PORT=8010`, `DATABASE_URL`, `DB_*`, `REDIS_URL`, `KAFKA_*`), identity (`JWT_*`, `INTERNAL_SERVICE_TOKENS`), billing (`BILLING_BASE_URL`, `BILLING_SERVICE_TOKEN`), `WORKERS_ENABLED`, email (`EMAIL_SENDER`, `SMTP_*`, `APP_BASE_URL`), invites (`INVITE_TTL_DAYS`, `LINK_MAX_TTL_DAYS`, `INVITES_PER_ORG_PER_DAY`, `CSV_ROWS_PER_ORG_PER_DAY`, `EMAIL_SENDS_PER_MINUTE`, `INVITE_TOKEN_SECRET`, `INVITE_EMAILS_VIA`, `CSV_MAX_*`), pilots and seats (`PILOT_MAX_MEMBERS`, `PILOT_DAYS`, `SEAT_SOURCE`), `DOMAIN_AUTO_JOIN_ENABLED`. Production refuses dev defaults (`Settings._production_problems`).
+See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `SERVICE_PORT=8010`, `DATABASE_URL`, `DB_*`, `REDIS_URL`, `KAFKA_*`), identity (`JWT_*`, `INTERNAL_SERVICE_TOKENS`), billing (`BILLING_BASE_URL`, `BILLING_SERVICE_TOKEN`), `WORKERS_ENABLED`, email (`EMAIL_SENDER`, `SMTP_*`, `APP_BASE_URL`), invites (`INVITE_TTL_DAYS`, `LINK_MAX_TTL_DAYS`, `INVITES_PER_ORG_PER_DAY`, `CSV_ROWS_PER_ORG_PER_DAY`, `MAX_REQUEST_BYTES`, `DNS_NAMESERVERS`, `EMAIL_SENDS_PER_MINUTE`, `INVITE_TOKEN_SECRET`, `INVITE_EMAILS_VIA`, `CSV_MAX_*`), pilots and seats (`PILOT_MAX_MEMBERS`, `PILOT_DAYS`, `SEAT_SOURCE`), `DOMAIN_AUTO_JOIN_ENABLED`. Production refuses dev defaults (`Settings._production_problems`).
 
 ## 9. Defaults D1-D6
 
