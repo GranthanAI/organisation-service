@@ -141,7 +141,7 @@ def test_the_buckets_are_as_specified():
     assert RATE_CSV_UPLOAD == RateLimitBucket("csv_upload", 5, 3600, "user", True)
     assert RATE_INVITE_PREVIEW == RateLimitBucket("invite_preview", 30, 60, "ip", False)
     assert RATE_INVITE_ACCEPT == RateLimitBucket("invite_accept", 10, 60, "user", False)
-    assert set(RATE_BUCKETS) == {"invite_create", "csv_upload", "invite_preview", "invite_accept"}
+    assert set(RATE_BUCKETS) == {"invite_create", "csv_upload", "invite_preview", "invite_accept", "domain_verify"}
 
 
 async def test_a_bucket_object_drives_the_dependency(redis, clock):

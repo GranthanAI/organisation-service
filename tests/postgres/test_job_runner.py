@@ -210,7 +210,8 @@ async def test_schedule_with_a_dedupe_key_queues_once_and_without_one_queues_eve
 # --- housekeeping ---
 async def test_ensure_recurring_jobs_registers_the_three_housekeeping_jobs(session_factory, clock):
     assert set(RECURRING) == {"idempotency.cleanup", "processed_events.cleanup", "outbox.cleanup", "invites.expire",
-                              "invites.purge", "csv.batches.finish"}
+                              "invites.purge", "csv.batches.finish", "domains.verify", "domains.recheck",
+                              "join_requests.expire"}
     assert set(RECURRING) <= set(REGISTRY)
     assert sorted(await ensure_recurring_jobs(session_factory, clock)) == sorted(RECURRING)
     assert await ensure_recurring_jobs(session_factory, clock) == []                 # idempotent at startup
@@ -268,7 +269,7 @@ async def test_outbox_cleanup_deletes_only_rows_published_more_than_7_days_ago(s
 async def test_a_housekeeping_job_reschedules_itself(session_factory, clock):
     await ensure_recurring_jobs(session_factory, clock)
     clock.advance(hours=1)
-    assert await JobRunner(session_factory, None, clock, poll_seconds=0.05).run_once() == 2     # the hourly one and the every-minute csv.batches.finish are due
+    assert await JobRunner(session_factory, None, clock, poll_seconds=0.05).run_once() == 3     # the hourly ones (cleanup, domains.verify) and the every-minute csv.batches.finish are due
     hourly = await jobs(session_factory, "idempotency.cleanup")
     assert [j.done_at is not None for j in hourly] == [True, False]
     assert hourly[1].run_at == clock.now() + timedelta(hours=1)

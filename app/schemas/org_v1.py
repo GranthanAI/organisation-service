@@ -261,6 +261,23 @@ class LinkUrlOut(BaseModel):
     url: str
 
 
+# ---- policies (Phase 10)
+class PolicyIn(_Request):
+    """A full replace: every field is given (approved_mode_ids and the cap may be empty and null)."""
+    lock_modes: bool
+    approved_mode_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    member_spend_cap_paise: int | None = None
+
+
+class PolicyOut(BaseModel):
+    version: int
+    lock_modes: bool
+    approved_mode_ids: list[uuid.UUID]
+    member_spend_cap_paise: int | None
+    updated_at: datetime | None
+    updated_by: uuid.UUID | None
+
+
 # ---- domains and join requests (Phase 9)
 class DomainAddIn(_Request):
     domain: str = Field(min_length=3, max_length=253)

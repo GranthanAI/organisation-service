@@ -137,17 +137,16 @@ async def test_email_verified_for_a_deleted_user_is_ignored(session_factory, clo
     assert (await known(session_factory)).email_verified_at is None
 
 
-async def test_the_phase_9_hook_is_called_once_per_verified_event_and_does_nothing_yet(session_factory, clock, monkeypatch):
+async def test_the_auto_join_hook_is_called_once_per_verified_event(session_factory, clock, monkeypatch):
     calls = []
 
-    async def spy(session, user_id, email):
+    async def spy(session, user_id, email, clock):
         calls.append((user_id, email))
 
     monkeypatch.setattr(h, "on_email_verified", spy)
     await h.process_email_verified(session_factory, verified(), clock)
     await h.process_email_verified(session_factory, verified(), clock)          # a duplicate: not called again
     assert calls == [(USER, "ada.lovelace@amity.edu")]
-    assert await h.on_email_verified(None, USER, "x@y.co") is None
 
 
 # ---------------------------------------------------------------- user.deleted

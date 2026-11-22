@@ -53,7 +53,7 @@ def problem_response(
 def domain_error_response(request: Request | None, exc: DomainError) -> JSONResponse:
     status = ERROR_STATUS.get(exc.code, 500)
     return problem_response(request, status, exc.code, exc.detail or exc.code.replace("_", " ").capitalize(),
-                            headers=exc.headers)
+                            headers=exc.headers, extra=exc.extra)
 
 
 def validation_errors(exc: RequestValidationError) -> list[dict[str, str]]:

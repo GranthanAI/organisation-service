@@ -6,6 +6,7 @@ from app.core.enums import JoinDecision
 class DomainError(Exception):
     code = "DOMAIN_ERROR"
     headers: dict[str, str] | None = None   # extra response headers (Retry-After, WWW-Authenticate)
+    extra: dict | None = None               # extra fields for the problem+json body (VERSION_CONFLICT: current_version)
 
     def __init__(self, detail: str = "") -> None:
         super().__init__(detail or self.code)
@@ -140,6 +141,10 @@ class InviteEmailMismatch(DomainError):
 
 class FeatureNotInPlan(DomainError):
     code = "FEATURE_NOT_IN_PLAN"
+
+
+class PreconditionRequired(DomainError):
+    code = "PRECONDITION_REQUIRED"
 
 
 class VersionConflict(DomainError):
