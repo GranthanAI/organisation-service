@@ -34,10 +34,11 @@ from app.repositories.known_user_repository import KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
 from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
-from app.security.models import OrgContext
+from app.security.models import CurrentUser, OrgContext
 from app.security.tokens import invite_token_hash
-from app.services import audit_service, csv_parse, invite_service
+from app.services import audit_service, csv_parse, invite_service, permission_rules
 from app.services.email_rules import normalize_email
+from app.services.permission_rules import Action
 from app.utils.ids import uuid7
 
 INVALID_EMAIL, DUPLICATE_IN_FILE, ROLE_NOT_ALLOWED = "invalid_email", "duplicate_in_file", "role_not_allowed"
@@ -202,8 +203,23 @@ def _report(batch: InviteBatch, errors: list[dict], used: int, bought: int | Non
 
 
 # ---------------------------------------------------------------------------------------------------- batch status
-async def get_batch(session: AsyncSession, batch_id: uuid.UUID) -> InviteBatch | None:
-    return await InviteRepository(session).get_batch(batch_id)
+@dataclass(frozen=True)
+class BatchAccess:
+    batch: InviteBatch
+    ctx: OrgContext
+
+
+async def batch_for_viewer(session: AsyncSession, batch_id: uuid.UUID, user: CurrentUser) -> BatchAccess:
+    """The batch, if the caller is an active member of ITS organisation who may view invites. Anything else about a
+    batch that is not theirs (missing, other org) is 404."""
+    batch = await InviteRepository(session).get_batch(batch_id)
+    membership = None if batch is None else await MembershipRepository(session).get_active(batch.org_id, user.id)
+    if batch is None or membership is None:
+        raise NotFound("Batch not found")
+    role = Role(membership.role)
+    permission_rules.check(Action.VIEW_INVITES, role)
+    return BatchAccess(batch, OrgContext(org_id=batch.org_id, user=user, role=role, membership_id=membership.id,
+                                         action=Action.VIEW_INVITES))
 
 
 async def progress(session: AsyncSession, batch: InviteBatch, now: datetime) -> tuple[int, int]:

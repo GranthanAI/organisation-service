@@ -176,7 +176,7 @@ async def test_invites_and_batches(session_factory):
         assert [i.token_hash for i in pages] == ["h3", "h2"]
         assert [i.token_hash for i in await repo.list_page(org.id, after=(pages[-1].created_at, pages[-1].id))] == ["h1"]
         assert [i.token_hash for i in await repo.list_page(org.id, kind="link")] == ["h3"]
-        assert await repo.count_created_since(org.id, NOW + timedelta(minutes=30)) == 2
+        assert await repo.count_created_since(org.id, NOW + timedelta(minutes=30)) == 1     # single invites only: the link is not counted
         got = await repo.get_batch(batch.id)
         assert got.errors == [{"row": 3, "reason": "invalid_email"}] and got.rows_total == 2
         got.status = "done"

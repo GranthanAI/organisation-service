@@ -17,12 +17,8 @@ from app.core import constants
 from app.core.clock import Clock
 from app.core.config import settings
 from app.core.constants import RATE_CSV_UPLOAD, RATE_INVITE_ACCEPT, RATE_INVITE_CREATE, RATE_INVITE_PREVIEW
-from app.core.enums import Role
-from app.core.exceptions import NotFound
 from app.db.session import unit_of_work
 from app.middleware.rate_limit import rate_limit
-from app.models.invite import InviteBatch
-from app.repositories.membership_repository import MembershipRepository
 from app.schemas.org_v1 import (
     AcceptIn,
     AcceptOut,
@@ -43,7 +39,7 @@ from app.schemas.org_v1 import (
 )
 from app.security.dependencies import get_current_user, require_org_role
 from app.security.models import CurrentUser, OrgContext
-from app.services import csv_service, invite_service, link_service, permission_rules
+from app.services import csv_service, invite_service, link_service
 from app.services.permission_rules import Action
 from app.utils.csv_safe import safe_cell
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT
@@ -119,22 +115,15 @@ async def upload_csv(file: UploadFile = File(...), role: str = Form("member"), d
 
 
 async def batch_context(batch_id: uuid.UUID, user: CurrentUser = Depends(get_current_user),
-                        session: AsyncSession = Depends(get_db_session)) -> tuple[InviteBatch, OrgContext]:
+                        session: AsyncSession = Depends(get_db_session)) -> csv_service.BatchAccess:
     """The batch and the caller's context in ITS organisation (VIEW_INVITES). Not a member of that org: 404."""
-    batch = await csv_service.get_batch(session, batch_id)
-    membership = None if batch is None else await MembershipRepository(session).get_active(batch.org_id, user.id)
-    if batch is None or membership is None:
-        raise NotFound("Batch not found")
-    role = Role(membership.role)
-    permission_rules.check(Action.VIEW_INVITES, role)
-    return batch, OrgContext(org_id=batch.org_id, user=user, role=role, membership_id=membership.id,
-                             action=Action.VIEW_INVITES)
+    return await csv_service.batch_for_viewer(session, batch_id, user)
 
 
 @router.get("/invite-batches/{batch_id}", response_model=BatchOut)
-async def get_batch(found: tuple[InviteBatch, OrgContext] = Depends(batch_context),
+async def get_batch(found: csv_service.BatchAccess = Depends(batch_context),
                     session: AsyncSession = Depends(get_db_session), clock: Clock = Depends(get_clock)):
-    batch = found[0]
+    batch = found.batch
     sent, pending = await csv_service.progress(session, batch, clock.now())
     return BatchOut(batch_id=batch.id, status=batch.status, dry_run=batch.dry_run, rows_total=batch.rows_total,
                     rows_ok=batch.rows_ok, rows_failed=batch.rows_failed, sent=sent, pending_send=pending,
@@ -142,10 +131,10 @@ async def get_batch(found: tuple[InviteBatch, OrgContext] = Depends(batch_contex
 
 
 @router.get("/invite-batches/{batch_id}/errors.csv")
-async def get_batch_errors(found: tuple[InviteBatch, OrgContext] = Depends(batch_context)):
+async def get_batch_errors(found: csv_service.BatchAccess = Depends(batch_context)):
     """The error report: row,email,reason. Every cell goes through safe_cell (no formula runs when it is opened), and
     a UTF-8 BOM makes Excel read it as UTF-8."""
-    batch = found[0]
+    batch = found.batch
     out = io.StringIO(newline="")
     writer = csv.writer(out, lineterminator="\r\n")
     writer.writerow(["row", "email", "reason"])
