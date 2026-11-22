@@ -27,7 +27,7 @@ accepted and echoed. Always use `127.0.0.1`, never `localhost` (Windows resolves
 
 Dev helpers: `scripts/make_staff_token.py` (a staff JWT), `scripts/seed_dev.py` (a small organisation), `scripts/read_topic.py`,
 `scripts/produce_user_events.py` (auth-service style UserRegistered and EmailVerified), `scripts/produce_user_deleted.py`,
-`scripts/replay_dlq.py`, `scripts/make_csv_fixture.py` (the 2,000-row college file).
+`scripts/replay_dlq.py`, `scripts/send_test_email.py` (one real test email through the SMTP provider), `scripts/make_csv_fixture.py` (the 2,000-row college file).
 
 Tests, one file at a time (the owner runs the full suite):
 
@@ -79,8 +79,9 @@ default for the ones marked "must be set" (`Settings._production_problems`). `.e
 | `DEBUG` | `true` | must be `false` |
 | `SERVICE_PORT` | `8010` | |
 | `DATABASE_URL` | dev Postgres on 127.0.0.1:5433 | must be set (not the dev password) |
-| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `10`, `10` | size against Postgres `max_connections` (lld.md section 10) |
-| `DB_POOL_RECYCLE_SECONDS`, `DB_PRE_PING` | `1800`, `false` | |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `10`, `10` | `(pool + overflow) x WEB_CONCURRENCY x replicas <= max_connections - 20` (lld.md section 10) |
+| `WEB_CONCURRENCY` | `2` (Docker image) | uvicorn processes per container |
+| `DB_POOL_TIMEOUT_SECONDS`, `DB_POOL_RECYCLE_SECONDS`, `DB_PRE_PING` | `10`, `1800`, `false` | |
 | `DB_CONNECT_TIMEOUT_SECONDS`, `DB_STATEMENT_TIMEOUT_MS` | `5`, `3000` | |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | must be set |
 | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_CONSUMER_GROUP`, `KAFKA_DLQ_TOPIC` | `127.0.0.1:9092`, `organisation-service`, `organisation.dlq` | bootstrap must be set |

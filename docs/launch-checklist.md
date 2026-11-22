@@ -11,7 +11,8 @@ Tick every line. "Verify" says how. Anything that depends on another repo is mar
 - [ ] `INVITE_TOKEN_SECRET` is a unique 32+ byte secret, stored in the secret manager (rotating it kills every open invite and link).
 - [ ] `APP_BASE_URL` is the public frontend URL (invite links are built from it). Verify: a test invite email's link opens the join page.
 - [ ] `DATABASE_URL` does not use the development password; the pool fits Postgres `max_connections` (replicas x workers x (`DB_POOL_SIZE` + `DB_MAX_OVERFLOW`) + about 10; lld.md section 10).
-- [ ] `FORWARDED_ALLOW_IPS` is the gateway's address (rate limits per IP trust `X-Forwarded-For` only from it).
+- [ ] `FORWARDED_ALLOW_IPS` contains the gateway's address (the per-IP limit on the public invite preview trusts `X-Forwarded-For` only from it; if it is wrong, every visitor shares the gateway's IP and the limit locks real users out). Verify: two requests through the gateway from different client IPs count separately.
+- [ ] `WEB_CONCURRENCY` (default 2) and the pool settings fit Postgres `max_connections`: `(DB_POOL_SIZE + DB_MAX_OVERFLOW) x WEB_CONCURRENCY x replicas <= max_connections - 20`.
 
 ## 2. Infrastructure
 - [ ] Migrations applied: `alembic upgrade head` shows `0009_domains`. Verify: `alembic current`.
@@ -22,20 +23,21 @@ Tick every line. "Verify" says how. Anything that depends on another repo is mar
 
 ## 3. The path from the outside
 - [ ] (other repo) api-gateway routes `/org/v1/*` and `/admin/org/v1/*` to this service, forwards `Authorization`, makes `GET /org/v1/invites/preview` public, caps request bodies, and never routes `/internal/*`. Verify: through the gateway, preview works without a token and `/internal/ping` is a 404.
-- [ ] (other repo) billing's `ORG_SERVICE_URL` and `ORG_SERVICE_TOKEN` are set, so billing can read memberships and grant the org plan. Verify: after a test member joins, billing shows the org plan for them.
+- [ ] (other repo) billing's `ORG_SERVICE_URL` and `ORG_SERVICE_TOKEN` are set (the token equals the `billing:` entry of `INTERNAL_SERVICE_TOKENS` here), so billing can read memberships and grant the org plan. Verify: after a test member joins, billing shows the org plan for them.
 - [ ] (other repo) the frontend `/join/<token>` page and the org admin pages exist.
 
 ## 4. Email
 - [ ] `EMAIL_SENDER=smtp` with `SMTP_HOST`, credentials, `EMAIL_FROM` on a domain with SPF and DKIM set up. Verify: invite a test address; the mail arrives, not in spam, and the link works.
+- [ ] Run `uv run python -m scripts.send_test_email --to <your address>` ONCE against the production SMTP provider (production settings). It must print `OK` and the mail must arrive (check spam). Never skip this: the sender has only been tested with fakes.
 - [ ] `EMAIL_SENDS_PER_MINUTE` is set to the SMTP provider's limit (default 60). A 2,000-student file takes about 33 minutes at 60 a minute; ask the provider for a higher limit before a big college.
 - [ ] Decision: `INVITE_EMAILS_VIA=local` until notification-service exists (then `notification`, after it has the accept-link route).
 
 ## 5. Domains and auto-join
-- [ ] Decision on `DOMAIN_AUTO_JOIN_ENABLED`. It is off by default. Turning it on needs (other repo) auth-service with `EMAIL_VERIFICATION_REQUIRED=true` in production, because auto-join trusts the `EmailVerified` event. If on: `DNS_NAMESERVERS` set if the container's resolver is unreliable (for example `1.1.1.1,8.8.8.8`).
+- [ ] Decision on `DOMAIN_AUTO_JOIN_ENABLED`. It is off by default. **Set (other repo) auth-service `EMAIL_VERIFICATION_REQUIRED=true` in production BEFORE turning it on**, because auto-join trusts the `EmailVerified` event. If on: `DNS_NAMESERVERS` set if the container's resolver is unreliable (for example `1.1.1.1,8.8.8.8`).
 - [ ] Verify a domain end to end on a test org: add, publish the TXT record, `POST .../verify`, or the staff `manual-verify`.
 
 ## 6. Seats
-- [ ] Decision: `SEAT_SOURCE=staff` (default; staff set seats after billing) or `billing` (only once billing has `GET /internal/orgs/{id}/subscription`; until then it keeps the existing seats and logs once).
+- [ ] Decision: `SEAT_SOURCE=staff` (default; staff set seats after billing) or `billing`. **Set `SEAT_SOURCE=billing` only after billing's `GET /internal/orgs/{id}/subscription` is deployed** (verify: it answers for a subscribed test org); until then it keeps the existing seats and logs once.
 - [ ] The first college: a pilot is created by staff (runbook: "Create a college pilot"); the owner got their invite or joined.
 
 ## 7. Backups and recovery

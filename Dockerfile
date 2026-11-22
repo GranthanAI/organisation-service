@@ -18,4 +18,7 @@ USER app
 EXPOSE 8010
 # The same image runs the API; background workers are switched on with WORKERS_ENABLED.
 # FORWARDED_ALLOW_IPS: proxies whose X-Forwarded-* headers are trusted (the gateway / LB).
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8010 --proxy-headers --forwarded-allow-ips ${FORWARDED_ALLOW_IPS:-127.0.0.1}"]
+# WEB_CONCURRENCY uvicorn processes per container (default 2): each one has its own connection pool, its own workers (the outbox relay
+# holds an advisory lock, jobs use SKIP LOCKED, the consumer group splits partitions) and shares /metrics through PROMETHEUS_MULTIPROC_DIR.
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+CMD ["sh", "-c", "rm -rf $PROMETHEUS_MULTIPROC_DIR && mkdir -p $PROMETHEUS_MULTIPROC_DIR && exec uvicorn app.main:app --host 0.0.0.0 --port 8010 --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips ${FORWARDED_ALLOW_IPS:-127.0.0.1}"]
