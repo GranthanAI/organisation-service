@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Response, status
 from app.api.deps import Probe, get_probes
 from app.core.config import settings
 from app.core.logging import logger
-from app.telemetry.metrics import render_all
+from app.telemetry.metrics import DEPENDENCY_UP, render_all
 
 router = APIRouter(tags=["Health"])
 
@@ -31,6 +31,8 @@ async def ready(response: Response, probes: dict[str, Probe] = Depends(get_probe
             return name, False
 
     results = dict(await asyncio.gather(*(run(n, p) for n, p in probes.items())))
+    for name, ok in results.items():
+        DEPENDENCY_UP.labels(dependency=name).set(1 if ok else 0)
     details = {name: ("UP" if ok else "DOWN") for name, ok in results.items()}
     failed = [name for name, ok in results.items() if not ok]
     if failed:

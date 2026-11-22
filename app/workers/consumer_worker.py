@@ -14,6 +14,7 @@ DLQ value: {original_topic, partition, offset, key, value, value_encoding, error
 import asyncio
 import base64
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -36,11 +37,12 @@ from app.events.schemas import (
 )
 from app.services import seat_source
 from app.services import user_event_handlers as handlers
-from app.telemetry.metrics import DLQ_MESSAGES
+from app.telemetry.metrics import CONSUMER_LAG, DLQ_MESSAGES
 from app.workers.backoff import sleep_or_stop
 
 RETRY_DELAYS = (0.5, 2.0, 5.0)
 DLQ_RETRY_SECONDS = 5.0
+LAG_EVERY_SECONDS = 10.0
 POLL_SECONDS = 1.0
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -155,7 +157,14 @@ class ConsumerWorker:
         self._stop = stop
         await self._consumer.start()
         try:
+            next_lag_at = 0.0
             while not stop.is_set():
+                if getattr(self._consumer, "lag", None) is not None and time.monotonic() >= next_lag_at:
+                    next_lag_at = time.monotonic() + LAG_EVERY_SECONDS
+                    try:
+                        CONSUMER_LAG.set(await self._consumer.lag())
+                    except Exception:
+                        logger.warning("could not read the consumer lag")
                 msg = await self._consumer.next_message(POLL_SECONDS)
                 if msg is None:
                     continue

@@ -47,6 +47,7 @@ from app.security.models import CurrentUser, OrgContext
 from app.security.tokens import hash_token, invite_token_hash
 from app.services import audit_service, domain_rules, job_service, join_service
 from app.services.email_rules import normalize_email
+from app.telemetry.metrics import INVITES_CREATED
 from app.utils.ids import uuid7
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT, decode_cursor, encode_cursor
 
@@ -203,6 +204,7 @@ async def create_invites(session: AsyncSession, ctx: OrgContext, emails: list[st
             results.append(InviteResult(email, OPEN_EXISTS))
             continue
         created += 1
+        INVITES_CREATED.labels(kind="email").inc()
         await announce(session, org, invite, inviter, clock)
         await audit_service.record(session, ctx.user, constants.AUDIT_INVITE_CREATED, "invite", invite.id,
                                    {"email": email, "role": role_enum.value}, org_id=ctx.org_id, clock=clock)

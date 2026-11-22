@@ -54,6 +54,16 @@ class KafkaEventConsumer:
                 return messages[0]
         return None
 
+    async def lag(self) -> int:
+        """Messages behind the end of the log, summed over the assigned partitions (org_consumer_lag)."""
+        assert self._consumer is not None, "consumer is not started"
+        total = 0
+        for tp in self._consumer.assignment():
+            highwater = self._consumer.highwater(tp)
+            if highwater is not None:
+                total += max(0, highwater - await self._consumer.position(tp))
+        return total
+
     async def commit_message(self, message: Any) -> None:
         assert self._consumer is not None, "consumer is not started"
         await self._consumer.commit({TopicPartition(message.topic, message.partition): message.offset + 1})

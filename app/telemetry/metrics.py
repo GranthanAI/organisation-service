@@ -39,6 +39,9 @@ DLQ_MESSAGES = Counter("org_dlq_messages", "Messages sent to organisation.dlq (c
 BILLING_REQUESTS = Histogram("org_billing_requests_seconds", "Duration of calls to billing-service", ["route", "result"],
                              buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0))
 
+# --- dependencies (set by /ready) ---
+DEPENDENCY_UP = Gauge("org_dependency_up", "1 if the last readiness probe of a dependency passed, 0 if it failed", ["dependency"])
+
 # --- workers ---
 WORKER_UP = Gauge("org_worker_up", "1 while a background worker is running, 0 when it is down or restarting", ["worker"])
 

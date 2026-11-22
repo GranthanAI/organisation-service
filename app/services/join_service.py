@@ -38,6 +38,7 @@ from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.services import audit_service, seat_rules
 from app.services.audit_service import Actor
+from app.telemetry.metrics import JOINS, SEAT_FULL
 from app.utils.ids import uuid7
 
 NO_SEATS = frozenset({SeatStatus.INCOMPLETE.value, SeatStatus.ENDED.value})
@@ -83,6 +84,9 @@ async def join(
         decision = JoinDecision.OK     # seats are bought after the owner exists
     error = join_decision_error(decision)
     if error is not None:
+        JOINS.labels(source=source.value, result=error.code.lower()).inc()
+        if decision in (JoinDecision.SEATS_FULL, JoinDecision.PILOT_FULL):
+            SEAT_FULL.inc()
         raise error
 
     # 3. a deleted user can never join
@@ -121,6 +125,8 @@ async def join(
         {"user_id": str(user_id), "source": source.value, "role": role.value,
          "invite_id": str(invite.id) if invite is not None else None},
         org_id=org_id, staff=staff, clock=clock)
+
+    JOINS.labels(source=source.value, result="ok").inc()
 
     # 7. org.member.joined
     event = OrgMemberJoined.create(clock, org_id=str(org_id), user_id=str(user_id), role=role,

@@ -43,6 +43,7 @@ from app.security.tokens import invite_token_hash
 from app.services import audit_service, invite_service, job_service, join_service, org_lifecycle_rules
 from app.services.email_rules import normalize_email
 from app.services.permission_rules import Action, check
+from app.telemetry.metrics import INVITES_CREATED
 from app.utils.ids import uuid7
 from app.utils.pagination import decode_cursor, encode_cursor
 
@@ -190,6 +191,7 @@ async def create_org(
         await InviteRepository(session).add(invite)
         await audit_service.record(session, actor, constants.AUDIT_INVITE_CREATED, "invite", invite.id,
                                    {"kind": "email", "role": "owner"}, reason, org_id=org.id, staff=True, clock=clock)
+        INVITES_CREATED.labels(kind="email").inc()
         await invite_service.announce(session, org, invite, "GranthanAI", clock)    # the email job and the event
         owner_invite_pending = True
 

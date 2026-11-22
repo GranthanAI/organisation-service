@@ -23,6 +23,7 @@ from app.repositories.org_repository import OrgRepository
 from app.security.models import OrgContext
 from app.security.tokens import invite_token, invite_token_hash
 from app.services import audit_service, invite_service
+from app.telemetry.metrics import INVITES_CREATED
 from app.utils.ids import uuid7
 
 
@@ -83,6 +84,7 @@ async def create(session: AsyncSession, ctx: OrgContext, max_uses: int, expires_
         token_hash=invite_token_hash(link_id, 1), max_uses=max_uses, uses=0, domain_restricted=domain_restricted,
         expires_at=now + timedelta(days=expires_in_days), token_version=1, created_by=ctx.user.id, created_at=now)
     await InviteRepository(session).add(link)
+    INVITES_CREATED.labels(kind="link").inc()
     await audit_service.record(
         session, ctx.user, constants.AUDIT_INVITE_LINK_CREATED, "invite", link.id,
         {"max_uses": max_uses, "domain_restricted": domain_restricted, "expires_at": link.expires_at.isoformat()},

@@ -42,6 +42,7 @@ from app.security.tokens import invite_token_hash
 from app.services import audit_service, csv_parse, invite_service, permission_rules
 from app.services.email_rules import normalize_email
 from app.services.permission_rules import Action
+from app.telemetry.metrics import INVITES_CREATED
 from app.utils.csv_safe import safe_cell
 from app.utils.ids import uuid7
 
@@ -205,6 +206,7 @@ async def upload(session: AsyncSession, ctx: OrgContext, filename: str | None, d
     created = [v for v in values if v["id"] in inserted]
 
     inviter = await invite_service.display_name(session, ctx.user.id, ctx.user.email)
+    INVITES_CREATED.labels(kind="csv").inc(len(created))
     events = await asyncio.to_thread(_build_events, created, org, inviter, expires, clock)
     await enqueue_many(session, topics.ORG_INVITE_CREATED, events, clock)
     local = settings.INVITE_EMAILS_VIA == "local"

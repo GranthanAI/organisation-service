@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.api.route_template import route_template
 from app.core.error_codes import ERROR_STATUS, HTTP_STATUS_CODES, INTERNAL_ERROR
 from app.core.exceptions import DomainError
 from app.core.logging import logger
@@ -34,6 +35,11 @@ def problem_response(
     extra: dict[str, Any] | None = None,
 ) -> JSONResponse:
     cid = _correlation_id(request)
+    # Every 4xx and 5xx is logged exactly once, here, where every problem+json response is made: the code, the route TEMPLATE
+    # (never the concrete path with ids), the status and the correlation id. Never a body, a token or an email address.
+    (logger.error if status >= 500 else logger.info)(
+        "request failed", code=code, route=route_template(request) if request is not None else "-", status=status,
+        method=request.method if request is not None else "-", correlation_id=cid)
     body: dict[str, Any] = {
         "type": PROBLEM_TYPE_BASE + code.lower().replace("_", "-"),
         "title": code.replace("_", " ").capitalize(),
