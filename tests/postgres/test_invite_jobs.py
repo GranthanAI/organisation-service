@@ -127,3 +127,33 @@ async def test_a_purged_invite_can_never_be_used_again(session_factory, clock):
     async with session_factory() as s:
         row = await s.get(Invite, invite_id)
     assert row.email is None and row.purged_at == NOW
+
+
+async def test_purge_also_clears_the_csv_name(session_factory, clock):
+    org = await seed_org(session_factory)
+    await add(session_factory, org, created_at=NOW - timedelta(days=100), kind="csv", invitee_name="Ann Student")
+    await add(session_factory, org, created_at=NOW - timedelta(days=1), kind="csv", invitee_name="Young Student")
+    await run(session_factory, invite_jobs.invites_purge, clock)
+    async with session_factory() as s:
+        names = sorted(n for n in (await s.execute(select(Invite.invitee_name))).scalars() if n)
+    assert names == ["Young Student"]
+
+
+async def test_purge_clears_old_csv_batch_error_rows_but_keeps_the_counts(session_factory, clock):
+    from app.models.invite import InviteBatch
+    org = await seed_org(session_factory)
+    errors = [{"row": 2, "email": "bad@amity.edu", "reason": "invalid_email"}]
+    async with unit_of_work(session_factory) as s:
+        for age, key in ((100, "old"), (89, "young")):
+            s.add(InviteBatch(id=uuid.uuid4(), org_id=org.id, filename=key, rows_total=3, rows_ok=2, rows_failed=1, status="done",
+                              errors=errors, created_at=NOW - timedelta(days=age), finished_at=NOW))
+    await run(session_factory, invite_jobs.invites_purge, clock)
+    async with session_factory() as s:
+        by_name = {b.filename: b for b in (await s.execute(select(InviteBatch))).scalars()}
+    assert by_name["old"].errors == [] and (by_name["old"].rows_total, by_name["old"].rows_failed) == (3, 1)
+    assert by_name["young"].errors == errors
+
+
+def test_the_batch_finish_job_is_recurring_every_minute():
+    from datetime import timedelta as td
+    assert RECURRING["csv.batches.finish"] == td(minutes=1)

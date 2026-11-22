@@ -89,3 +89,20 @@ async def invites_purge(session: AsyncSession, job: Job, clock: Clock) -> None:
             break
     if total:
         logger.info("old invites purged", count=total)
+    cutoff = now - timedelta(days=constants.CSV_ERRORS_PURGE_AFTER_DAYS)           # CSV error rows hold email addresses too
+    errors_cleared = 0
+    while True:
+        cleared = await repo.purge_batch_errors(cutoff, constants.INVITE_JOB_BATCH)
+        errors_cleared += cleared
+        if cleared < constants.INVITE_JOB_BATCH:
+            break
+    if errors_cleared:
+        logger.info("old csv batch errors cleared", count=errors_cleared)
+
+
+@job_handler(constants.JOB_CSV_BATCHES_FINISH)
+async def csv_batches_finish(session: AsyncSession, job: Job, clock: Clock) -> None:
+    """Every minute: a batch that is sending becomes done once no live invite of it is waiting for its email."""
+    finished = await InviteRepository(session).finish_batches(clock.now())
+    if finished:
+        logger.info("csv batches finished", count=finished)

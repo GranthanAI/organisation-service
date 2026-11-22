@@ -67,6 +67,7 @@ RECURRING: dict[str, timedelta] = {
     "outbox.cleanup": timedelta(days=1),
     "invites.expire": timedelta(days=1),
     "invites.purge": timedelta(days=1),
+    "csv.batches.finish": timedelta(minutes=1),
 }
 
 
