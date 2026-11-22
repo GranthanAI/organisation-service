@@ -37,6 +37,7 @@ from app.events.producers import enqueue
 from app.events.schemas import OrgInviteCreated, iso_z
 from app.models.invite import Invite
 from app.models.organisation import Organisation
+from app.repositories.domain_repository import DomainRepository
 from app.repositories.invite_repository import InviteRepository
 from app.repositories.known_user_repository import KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
@@ -225,6 +226,8 @@ def _closed_error(invite: Invite, now: datetime) -> InviteInvalid | InviteExpire
         return InviteInvalid("This invitation is not valid")
     if invite.purged_at is not None:
         return InviteInvalid("This invitation is not valid")
+    if invite.kind == InviteKind.LINK.value and invite.max_uses is not None and invite.uses >= invite.max_uses:
+        return InviteInvalid("This invitation is not valid")                # a used-up link
     if invite.expires_at <= now:
         return InviteExpired("This invitation has expired")
     return None
@@ -244,7 +247,8 @@ async def preview(session: AsyncSession, token: str, clock: Clock = system_clock
         raise InviteInvalid("This invitation is not valid")
     inviter = await display_name(session, invite.created_by, None) or ANONYMOUS_INVITER
     return {"org_name": org.name, "org_type": org.type, "inviter_name": inviter, "role": invite.role,
-            "email_hint": email_hint(invite.email), "expires_at": invite.expires_at}
+            "email_hint": None if invite.kind == InviteKind.LINK.value else email_hint(invite.email),
+            "expires_at": invite.expires_at}
 
 
 # ---------------------------------------------------------------------------------------------------- accept
@@ -280,6 +284,8 @@ async def accept(session: AsyncSession, user: CurrentUser, token: str, clock: Cl
         if invite.accepted_by == user.id and mine is not None:
             return body
         raise InviteInvalid("This invitation is not valid")
+    if invite.kind == InviteKind.LINK.value:
+        return await _accept_link(session, user, invite, body, now, clock)
     error = _closed_error(invite, now)
     if error is not None:
         raise error
@@ -289,6 +295,27 @@ async def accept(session: AsyncSession, user: CurrentUser, token: str, clock: Cl
     source = {InviteKind.EMAIL.value: JoinSource.INVITE, InviteKind.CSV.value: JoinSource.CSV,
               InviteKind.LINK.value: JoinSource.LINK}[invite.kind]
     await join_service.join(session, invite.org_id, user.id, source, Role(invite.role), invite, actor=user, clock=clock)
+    return body
+
+
+async def _accept_link(session: AsyncSession, user: CurrentUser, link: Invite, body: dict, now: datetime,
+                       clock: Clock) -> dict:
+    """A link is not bound to an email. The same person retrying after joining (an active membership here with source
+    link) gets the same 200, even if the link has since filled up. Otherwise: not revoked or expired, not used up, the
+    JWT email domain must be a verified domain of the org when the link is domain-restricted, then join(source=link)."""
+    mine = await MembershipRepository(session).get_active(link.org_id, user.id)
+    if mine is not None and mine.source == JoinSource.LINK.value:
+        return body
+    error = _closed_error(link, now)         # revoked, expired, or used up (uses >= max_uses)
+    if error is not None:
+        raise error
+    if link.domain_restricted:
+        domain = user.email.rpartition("@")[2].lower()
+        verified = {d.domain.lower() for d in await DomainRepository(session).list_for_org(link.org_id)
+                    if d.verified_at is not None}
+        if domain not in verified:
+            raise InviteEmailMismatch("This link is only for people with an email address from the organisation")
+    await join_service.join(session, link.org_id, user.id, JoinSource.LINK, Role.MEMBER, link, actor=user, clock=clock)
     return body
 
 

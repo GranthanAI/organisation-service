@@ -213,7 +213,8 @@ async def test_two_different_users_racing_for_one_invite_only_the_right_email_ge
     right, right_h = who("right@amity.edu")
     wrong, wrong_h = who("wrong@amity.edu")
     results = await asyncio.gather(accept(api, token, right_h), accept(api, token, wrong_h))
-    assert sorted(r.status_code for r in results) == [200, 403]
+    codes = sorted(r.status_code for r in results)
+    assert codes in ([200, 403], [200, 404])      # the wrong user is refused: 403 if first, 404 once the right one has taken it
     assert len([m for m in await rows(api, Membership) if m.user_id in (right, wrong)]) == 1
 
 

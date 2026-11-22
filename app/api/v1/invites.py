@@ -4,31 +4,48 @@ The preview is the ONLY route here without a JWT (and without the idempotency ro
 router, rate-limited per IP. api-gateway must treat exactly GET /org/v1/invites/preview as public.
 """
 
+import csv
+import io
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import get_clock, get_db_session, get_session_factory_dep
 from app.api.idempotent_route import IdempotentRoute
+from app.core import constants
 from app.core.clock import Clock
-from app.core.constants import RATE_INVITE_ACCEPT, RATE_INVITE_CREATE, RATE_INVITE_PREVIEW
+from app.core.config import settings
+from app.core.constants import RATE_CSV_UPLOAD, RATE_INVITE_ACCEPT, RATE_INVITE_CREATE, RATE_INVITE_PREVIEW
+from app.core.enums import Role
+from app.core.exceptions import NotFound
 from app.db.session import unit_of_work
 from app.middleware.rate_limit import rate_limit
+from app.models.invite import InviteBatch
+from app.repositories.membership_repository import MembershipRepository
 from app.schemas.org_v1 import (
     AcceptIn,
     AcceptOut,
+    BatchOut,
     CreateInvitesIn,
     CreateInvitesOut,
+    CreateLinkIn,
+    CsvSeatsOut,
+    CsvUploadOut,
     InvitePageOut,
     InviteResultOut,
+    LinkCreatedOut,
+    LinkListOut,
+    LinkOut,
+    LinkUrlOut,
     PreviewOut,
     SeatsInfoOut,
 )
 from app.security.dependencies import get_current_user, require_org_role
 from app.security.models import CurrentUser, OrgContext
-from app.services import invite_service
+from app.services import csv_service, invite_service, link_service, permission_rules
 from app.services.permission_rules import Action
+from app.utils.csv_safe import safe_cell
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
 # ---- public: no JWT, no idempotency
@@ -84,3 +101,91 @@ async def accept_invite(body: AcceptIn, user: CurrentUser = Depends(get_current_
                         factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
     async with unit_of_work(factory) as session:
         return await invite_service.accept(session, user, body.token, clock)
+
+
+# ---- CSV bulk invites (Phase 8): validated and created inside the request; only the emails go out in the background
+@router.post("/orgs/{org_id}/invites/csv", response_model=CsvUploadOut,
+             dependencies=[Depends(rate_limit(RATE_CSV_UPLOAD))])
+async def upload_csv(file: UploadFile = File(...), role: str = Form("member"), dry_run: bool = Form(False),
+                     ctx: OrgContext = Depends(require_org_role(Action.INVITE)),
+                     factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
+    data = await file.read(settings.CSV_MAX_BYTES + 1)          # one byte over the limit is enough to refuse it
+    async with unit_of_work(factory) as session:
+        report = await csv_service.upload(session, ctx, file.filename, data, role.strip().lower(), dry_run, clock)
+    return CsvUploadOut(
+        batch_id=report.batch_id, dry_run=report.dry_run, rows_total=report.rows_total, rows_ok=report.rows_ok,
+        rows_failed=report.rows_failed, errors_preview=report.errors[:constants.CSV_ERRORS_PREVIEW],
+        seats=CsvSeatsOut(used=report.used, bought=report.bought, open_invites=report.open_invites))
+
+
+async def batch_context(batch_id: uuid.UUID, user: CurrentUser = Depends(get_current_user),
+                        session: AsyncSession = Depends(get_db_session)) -> tuple[InviteBatch, OrgContext]:
+    """The batch and the caller's context in ITS organisation (VIEW_INVITES). Not a member of that org: 404."""
+    batch = await csv_service.get_batch(session, batch_id)
+    membership = None if batch is None else await MembershipRepository(session).get_active(batch.org_id, user.id)
+    if batch is None or membership is None:
+        raise NotFound("Batch not found")
+    role = Role(membership.role)
+    permission_rules.check(Action.VIEW_INVITES, role)
+    return batch, OrgContext(org_id=batch.org_id, user=user, role=role, membership_id=membership.id,
+                             action=Action.VIEW_INVITES)
+
+
+@router.get("/invite-batches/{batch_id}", response_model=BatchOut)
+async def get_batch(found: tuple[InviteBatch, OrgContext] = Depends(batch_context),
+                    session: AsyncSession = Depends(get_db_session), clock: Clock = Depends(get_clock)):
+    batch = found[0]
+    sent, pending = await csv_service.progress(session, batch, clock.now())
+    return BatchOut(batch_id=batch.id, status=batch.status, dry_run=batch.dry_run, rows_total=batch.rows_total,
+                    rows_ok=batch.rows_ok, rows_failed=batch.rows_failed, sent=sent, pending_send=pending,
+                    created_at=batch.created_at, finished_at=batch.finished_at)
+
+
+@router.get("/invite-batches/{batch_id}/errors.csv")
+async def get_batch_errors(found: tuple[InviteBatch, OrgContext] = Depends(batch_context)):
+    """The error report: row,email,reason. Every cell goes through safe_cell (no formula runs when it is opened), and
+    a UTF-8 BOM makes Excel read it as UTF-8."""
+    batch = found[0]
+    out = io.StringIO(newline="")
+    writer = csv.writer(out, lineterminator="\r\n")
+    writer.writerow(["row", "email", "reason"])
+    for error in batch.errors or []:
+        writer.writerow([safe_cell(error.get("row")), safe_cell(error.get("email")), safe_cell(error.get("reason"))])
+    return Response(
+        content=("\ufeff" + out.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="invite-errors-{batch.id}.csv"'})
+
+
+# ---- invite links
+@router.post("/orgs/{org_id}/invite-links", response_model=LinkCreatedOut)
+async def create_link(body: CreateLinkIn, ctx: OrgContext = Depends(require_org_role(Action.INVITE)),
+                      factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
+    async with unit_of_work(factory) as session:
+        link, url = await link_service.create(session, ctx, body.max_uses, body.expires_in_days, body.domain_restricted, clock)
+    return LinkCreatedOut(link_id=link.id, url=url, max_uses=link.max_uses, expires_at=link.expires_at,
+                          domain_restricted=link.domain_restricted)
+
+
+@router.get("/orgs/{org_id}/invite-links", response_model=LinkListOut)
+async def list_links(ctx: OrgContext = Depends(require_org_role(Action.VIEW_INVITES)),
+                     session: AsyncSession = Depends(get_db_session), clock: Clock = Depends(get_clock)):
+    return LinkListOut(items=[LinkOut(link_id=v.link_id, created_by=v.created_by, created_at=v.created_at,
+                                      expires_at=v.expires_at, max_uses=v.max_uses, uses=v.uses,
+                                      domain_restricted=v.domain_restricted, status=v.status)
+                              for v in await link_service.list_links(session, ctx.org_id, clock)])
+
+
+@router.get("/orgs/{org_id}/invite-links/{link_id}/url", response_model=LinkUrlOut)
+async def link_url(link_id: uuid.UUID, ctx: OrgContext = Depends(require_org_role(Action.INVITE)),
+                   factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
+    async with unit_of_work(factory) as session:       # the view is audited, so this GET writes
+        url = await link_service.view_url(session, ctx, link_id, clock)
+    return LinkUrlOut(link_id=link_id, url=url)
+
+
+@router.delete("/orgs/{org_id}/invite-links/{link_id}", status_code=204)
+async def revoke_link(link_id: uuid.UUID, ctx: OrgContext = Depends(require_org_role(Action.INVITE)),
+                      factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
+    async with unit_of_work(factory) as session:
+        await link_service.revoke(session, ctx, link_id, clock)
+    return Response(status_code=204)

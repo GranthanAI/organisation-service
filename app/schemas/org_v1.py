@@ -155,7 +155,7 @@ class PreviewOut(BaseModel):
     org_type: str
     inviter_name: str
     role: str
-    email_hint: str
+    email_hint: str | None      # null for a link
     expires_at: datetime
 
 
@@ -186,3 +186,74 @@ class InviteRowOut(BaseModel):
 class InvitePageOut(BaseModel):
     items: list[InviteRowOut]
     next_cursor: str | None
+
+
+# ---- CSV bulk invites and invite batches (Phase 8)
+class CsvErrorOut(BaseModel):
+    row: int
+    email: str
+    reason: str
+
+
+class CsvSeatsOut(BaseModel):
+    used: int
+    bought: int | None
+    open_invites: int
+
+
+class CsvUploadOut(BaseModel):
+    batch_id: uuid.UUID
+    dry_run: bool
+    rows_total: int
+    rows_ok: int
+    rows_failed: int
+    errors_preview: list[CsvErrorOut]
+    seats: CsvSeatsOut
+
+
+class BatchOut(BaseModel):
+    batch_id: uuid.UUID
+    status: str
+    dry_run: bool
+    rows_total: int
+    rows_ok: int
+    rows_failed: int
+    sent: int
+    pending_send: int
+    created_at: datetime
+    finished_at: datetime | None
+
+
+# ---- invite links
+class CreateLinkIn(_Request):
+    max_uses: int = Field(ge=1, le=5000)
+    expires_in_days: int = Field(ge=1)
+    domain_restricted: bool = False
+
+
+class LinkCreatedOut(BaseModel):
+    link_id: uuid.UUID
+    url: str
+    max_uses: int
+    expires_at: datetime
+    domain_restricted: bool
+
+
+class LinkOut(BaseModel):
+    link_id: uuid.UUID
+    created_by: uuid.UUID | None
+    created_at: datetime
+    expires_at: datetime
+    max_uses: int | None
+    uses: int
+    domain_restricted: bool
+    status: str      # open | used_up | expired | revoked
+
+
+class LinkListOut(BaseModel):
+    items: list[LinkOut]
+
+
+class LinkUrlOut(BaseModel):
+    link_id: uuid.UUID
+    url: str
