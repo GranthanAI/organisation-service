@@ -1,5 +1,6 @@
 """organisation-service entrypoint: FastAPI app, lifespan, middleware, routers."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from app.db.postgres import dispose_engine
 from app.middleware.correlation import CorrelationIDMiddleware
 from app.middleware.exception_handler import register_exception_handlers
 from app.security.service_tokens import load_service_tokens
+from app.telemetry import loop_lag
 from app.workers.manager import WorkerManager
 
 
@@ -24,8 +26,12 @@ async def lifespan(app: FastAPI):
     if settings.WORKERS_ENABLED:   # outbox relay, consumer worker and job runner; a crash never takes the API down
         workers = WorkerManager()
         workers.start()
+    lag_stop = asyncio.Event()
+    lag_task = asyncio.create_task(loop_lag.run(lag_stop))
     yield
     logger.info("shutting down")
+    lag_stop.set()
+    await lag_task
     if workers is not None:
         await workers.stop()       # signal stop, wait up to 10 s, then cancel
     await dispose_engine()

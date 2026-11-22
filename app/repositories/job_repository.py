@@ -1,6 +1,7 @@
 """Persistence for scheduled jobs. The runner is Phase 4; `claim_due` is the query it will use.
 No business rules; never commits."""
 
+import asyncio
 import uuid
 from datetime import datetime
 
@@ -53,5 +54,8 @@ class JobRepository:
         return result.rowcount
 
     async def add_many(self, jobs: list[Job]) -> None:
-        self.session.add_all(jobs)
-        await self.session.flush()
+        """Chunked, yielding to the event loop between chunks (a CSV upload adds thousands)."""
+        for i in range(0, len(jobs), 50):
+            self.session.add_all(jobs[i:i + 50])
+            await self.session.flush()
+            await asyncio.sleep(0)

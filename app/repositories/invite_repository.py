@@ -1,5 +1,6 @@
 """Persistence for invites and CSV batches. No business rules; never commits."""
 
+import asyncio
 import uuid
 from datetime import datetime
 
@@ -8,6 +9,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invite import Invite, InviteBatch
+
+BULK_CHUNK = 50      # rows per statement in a bulk insert (statement building is CPU on the event loop)
 
 
 class InviteRepository:
@@ -196,7 +199,9 @@ class InviteRepository:
             .returning(Invite.id))
         # executemany form: the statement is compiled once, not once per row (a multi-VALUES insert of 2,000 rows
         # spent two seconds just compiling)
-        inserted.update((await self.session.execute(stmt, rows)).scalars())
+        for i in range(0, len(rows), BULK_CHUNK):          # in chunks, yielding between them: the event loop serves others
+            inserted.update((await self.session.execute(stmt, rows[i:i + BULK_CHUNK])).scalars())
+            await asyncio.sleep(0)
         return inserted
 
     async def batch_progress(self, batch_id: uuid.UUID, now: datetime) -> tuple[int, int]:

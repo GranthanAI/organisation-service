@@ -4,8 +4,7 @@ The preview is the ONLY route here without a JWT (and without the idempotency ro
 router, rate-limited per IP. api-gateway must treat exactly GET /org/v1/invites/preview as public.
 """
 
-import csv
-import io
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
@@ -41,7 +40,6 @@ from app.security.dependencies import get_current_user, require_org_role
 from app.security.models import CurrentUser, OrgContext
 from app.services import csv_service, invite_service, link_service
 from app.services.permission_rules import Action
-from app.utils.csv_safe import safe_cell
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
 # ---- public: no JWT, no idempotency
@@ -135,13 +133,9 @@ async def get_batch_errors(found: csv_service.BatchAccess = Depends(batch_contex
     """The error report: row,email,reason. Every cell goes through safe_cell (no formula runs when it is opened), and
     a UTF-8 BOM makes Excel read it as UTF-8."""
     batch = found.batch
-    out = io.StringIO(newline="")
-    writer = csv.writer(out, lineterminator="\r\n")
-    writer.writerow(["row", "email", "reason"])
-    for error in batch.errors or []:
-        writer.writerow([safe_cell(error.get("row")), safe_cell(error.get("email")), safe_cell(error.get("reason"))])
+    content = await asyncio.to_thread(csv_service.render_errors_csv, batch.errors or [])
     return Response(
-        content=("\ufeff" + out.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
+        content=content, media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="invite-errors-{batch.id}.csv"'})
 
 

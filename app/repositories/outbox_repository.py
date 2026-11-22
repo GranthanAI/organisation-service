@@ -1,6 +1,7 @@
 """Persistence for the outbox. Rows are written in the same transaction as the change they describe; the relay
 (workers/outbox_worker.py) publishes them. No business rules; never commits."""
 
+import asyncio
 import uuid
 from datetime import datetime
 
@@ -63,5 +64,8 @@ class OutboxRepository:
         return result.rowcount
 
     async def add_many(self, events: list[OutboxEvent]) -> None:
-        self.session.add_all(events)
-        await self.session.flush()
+        """Chunked, yielding to the event loop between chunks (a CSV upload adds thousands)."""
+        for i in range(0, len(events), 50):
+            self.session.add_all(events[i:i + 50])
+            await self.session.flush()
+            await asyncio.sleep(0)
