@@ -29,8 +29,10 @@ class Settings(BaseSettings):
     SERVICE_PORT: int = 8010
     # Confirm the host port against ../docker-compose.yml (5433 maps onto the shared graphgpt-postgres).
     DATABASE_URL: str = DEV_DATABASE_URL
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 5
+    DB_POOL_SIZE: int = 10                 # per replica; see docs/lld.md for the Postgres max_connections math
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 1800    # connections older than this are replaced at checkout (instead of a ping per checkout)
+    DB_PRE_PING: bool = False              # one extra round trip on EVERY checkout: off; reads retry once on a dropped connection
     DB_CONNECT_TIMEOUT_SECONDS: float = 5.0
     DB_STATEMENT_TIMEOUT_MS: int = 3000
     REDIS_URL: str = "redis://127.0.0.1:6379/0"

@@ -401,3 +401,20 @@ See `.env.example` for every setting with its comment: service (`ENVIRONMENT`, `
 ## 9. Defaults D1-D6
 
 D1 one active org per user (partial unique index). D2 joins hard-stop when full. D3 owners and admins count as seats. D4 only staff create organisations in v1. D5 domain auto-join off unless `DOMAIN_AUTO_JOIN_ENABLED=true`. D6 org admins see names, emails and usage counts, never content.
+
+## 10. Q1: latency of the membership lookup (measured on the dev machine: Windows, Docker Postgres, one process)
+
+Before: sequential p50 20 ms / p99 38 ms; 20 concurrent p50 207-238 ms / p95 670-755 ms (real HTTP, `tests/load/internal_latency.py`).
+
+Where the time went (`tests/load/measure_q1.py`, in-process): a raw asyncpg `SELECT 1` round trip is **2.4-2.8 ms** and the membership query alone is 2.5 ms (concurrency 20: 4-6 ms). Through SQLAlchemy the same query took **15-17 ms** (134-152 ms at concurrency 20): `pool_pre_ping` (a ping per checkout), `BEGIN`, the query, `ROLLBACK` (twice: the dependency and the pool reset), and a pool of 5 plus 5 overflow that 20 callers had to queue for. The query itself was already one join.
+
+What changed:
+- `DB_POOL_SIZE` 10 and `DB_MAX_OVERFLOW` 10 (was 5 and 5); `pool_pre_ping` off (`DB_PRE_PING=false`) with `pool_recycle=1800`; read sessions (`ResilientSession`) retry ONCE when the pooled connection turns out to be dead (`execute` and `get`; never used for writes).
+- `/internal` routes use `get_internal_session`: AUTOCOMMIT (no BEGIN, no ROLLBACK), the same pool. They already had no rate limiter, no known-user sync and no idempotency.
+- The internal router is mounted FIRST (routes match in order), and `CorrelationIDMiddleware` is plain ASGI instead of `BaseHTTPMiddleware`. Direct ASGI cost per call: 7.9 ms before, 6.0 ms after.
+
+After (real HTTP against uvicorn, 2,000 calls each): sequential **p50 10 ms, p95 15 ms, p99 19.6 ms** (target p99 under 20 ms: met). 20 concurrent: p50 157-168 ms, p95 516-605 ms, p99 810-916 ms.
+
+**The 20-concurrent target (p95 under 100 ms) cannot be met on this machine, and the database is not the reason.** `GET /internal/ping`, which touches no database, measures sequential p50 7.5 ms and 20-concurrent p50 138 ms, p95 480 ms, p99 725 ms: the HTTP stack on Windows (uvicorn, the Proactor loop and the test client sharing the same few cores) costs about 7 ms a request and one process serves about 130 requests a second, so 20 simultaneous callers queue behind each other. The membership lookup adds only about 3 ms to that floor. The target is therefore set as a multiple of the no-database floor: **20-concurrent p95 within 1.5 times the ping p95** (measured 1.26 times). To lower the absolute number, run more uvicorn workers or replicas; billing caches memberships, so it asks rarely.
+
+Postgres connections per process: up to `DB_POOL_SIZE + DB_MAX_OVERFLOW` = 20. With R replicas of W workers each, `R x W x 20` plus about 10 for migrations, psql and monitoring must stay below the server's `max_connections` (default 100): for example 3 replicas x 1 worker = 60. Lower the two settings, or put PgBouncer in front, before adding replicas beyond that.

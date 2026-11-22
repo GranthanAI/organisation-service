@@ -15,6 +15,15 @@ from app.security.service_tokens import require_service
 api_router = APIRouter()
 api_router.include_router(health.router)
 
+# Service-to-service routes. Never routed by the gateway; every one needs a service token. Mounted FIRST: routes are matched
+# in order and billing's membership lookup is the hot path (Q1), so it should not walk past every /org/v1 route.
+internal_router = APIRouter(prefix="/internal", tags=["Internal"],
+                            dependencies=[Depends(require_service), Depends(time_request)])
+internal_router.include_router(ping.router)
+internal_router.include_router(memberships.router)
+internal_router.include_router(orgs.router)
+api_router.include_router(internal_router)
+
 # Public routes, reached through api-gateway as /org/v1/*. Every router here uses IdempotentRoute (POSTs need an
 # Idempotency-Key).
 v1_router = APIRouter(prefix="/org/v1")
@@ -27,14 +36,6 @@ v1_router.include_router(invites.router)
 v1_router.include_router(domains.router)
 v1_router.include_router(policies.router)
 api_router.include_router(v1_router)
-
-# Service-to-service routes. Never routed by the gateway; every one needs a service token.
-internal_router = APIRouter(prefix="/internal", tags=["Internal"],
-                            dependencies=[Depends(require_service), Depends(time_request)])
-internal_router.include_router(ping.router)
-internal_router.include_router(memberships.router)
-internal_router.include_router(orgs.router)
-api_router.include_router(internal_router)
 
 # Staff routes, reached through api-gateway as /admin/org/v1/*: GranthanAI staff only.
 admin_router = APIRouter(prefix="/admin/org/v1")

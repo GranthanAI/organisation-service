@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import insert
 
-from app.api.deps import get_db_session
+from app.api.deps import get_db_session, get_internal_session
 from app.db.session import unit_of_work
 from app.main import app
 from app.models.membership import Membership
@@ -33,6 +33,7 @@ async def env(session_factory):
             yield s
 
     app.dependency_overrides[get_db_session] = session
+    app.dependency_overrides[get_internal_session] = session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://org", headers=AUTH) as client:
         billing = HttpOrgDirectory("http://org", TOKEN, transport=transport)

@@ -6,14 +6,14 @@ import uuid
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db_session
+from app.api.deps import get_internal_session
 from app.schemas.internal import MembershipOut
 from app.services import directory_service
 
 router = APIRouter()
 
 
-async def _membership(user_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)) -> dict:
+async def _membership(user_id: uuid.UUID, session: AsyncSession = Depends(get_internal_session)) -> dict:
     return await directory_service.membership_for_user(session, user_id)
 
 

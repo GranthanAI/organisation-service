@@ -9,7 +9,7 @@ import fakeredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.deps import get_clock, get_db_session, get_redis_client, get_session_factory_dep
+from app.api.deps import get_clock, get_db_session, get_internal_session, get_redis_client, get_session_factory_dep
 from app.core.clock import FixedClock
 from app.db.session import unit_of_work
 from app.main import app
@@ -112,6 +112,7 @@ async def api(session_factory, clock, monkeypatch):
             yield s
 
     app.dependency_overrides[get_db_session] = session
+    app.dependency_overrides[get_internal_session] = session
     app.dependency_overrides[get_session_factory_dep] = lambda: session_factory
     redis = fakeredis.FakeAsyncRedis()                       # ONE instance: rate-limit counters must persist across requests
     app.dependency_overrides[get_redis_client] = lambda: redis
