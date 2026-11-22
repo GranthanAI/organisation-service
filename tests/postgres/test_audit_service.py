@@ -177,5 +177,5 @@ def test_the_action_names_are_constants():
         "seats.set", "invite.created", "invite.revoked", "domain.verified", "policy.changed", "org.owner_missing",
         "org.details_changed", "org.ownership_transferred", "invite.resent", "invite.csv_uploaded",
         "invite_link.created", "invite_link.url_viewed", "domain.added", "domain.updated", "domain.removed",
-        "domain.unverified", "join_request.created", "join_request.approved", "join_request.declined",
+        "domain.unverified", "seats.synced", "join_request.created", "join_request.approved", "join_request.declined",
     }

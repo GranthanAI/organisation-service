@@ -211,7 +211,7 @@ async def test_schedule_with_a_dedupe_key_queues_once_and_without_one_queues_eve
 async def test_ensure_recurring_jobs_registers_the_three_housekeeping_jobs(session_factory, clock):
     assert set(RECURRING) == {"idempotency.cleanup", "processed_events.cleanup", "outbox.cleanup", "invites.expire",
                               "invites.purge", "csv.batches.finish", "domains.verify", "domains.recheck",
-                              "join_requests.expire"}
+                              "join_requests.expire", "seats.refresh_all"}
     assert set(RECURRING) <= set(REGISTRY)
     assert sorted(await ensure_recurring_jobs(session_factory, clock)) == sorted(RECURRING)
     assert await ensure_recurring_jobs(session_factory, clock) == []                 # idempotent at startup

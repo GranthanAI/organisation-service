@@ -71,6 +71,7 @@ RECURRING: dict[str, timedelta] = {
     "domains.verify": timedelta(hours=1),
     "domains.recheck": timedelta(days=1),
     "join_requests.expire": timedelta(days=1),
+    "seats.refresh_all": timedelta(days=1),
 }
 
 
@@ -85,4 +86,4 @@ async def ensure_recurring_jobs(session_factory: async_sessionmaker[AsyncSession
 
 
 # Importing these registers their handlers (they use `job_handler` from this module, defined above).
-from app.services import domain_jobs, invite_jobs, org_jobs  # noqa: E402,F401
+from app.services import domain_jobs, invite_jobs, org_jobs, seat_jobs  # noqa: E402,F401

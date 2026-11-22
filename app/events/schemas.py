@@ -130,6 +130,18 @@ class UserRegisteredPayload(_Consumed):
     full_name: str | None = None
 
 
+class SubscriptionChangedPayload(_Consumed):
+    """billing-service's subscription.changed (bare JSON, keyed by billing_account_id). Only `owner_type == "org"` matters here, and
+    only as a hint: the seats are fetched from billing, not read from the event."""
+
+    event_id: str
+    owner_type: str
+    owner_id: uuid.UUID
+    subscription_id: str | None = None
+    plan_code: str | None = None
+    status: str | None = None
+
+
 class EmailVerifiedPayload(_Consumed):
     event_id: str
     timestamp: datetime

@@ -28,12 +28,15 @@ from app.core.logging import logger
 from app.events import topics
 from app.events.schemas import (
     EmailVerifiedPayload,
+    SubscriptionChangedPayload,
     UserDeletedEvent,
     UserEventEnvelope,
     UserRegisteredPayload,
     iso_z,
 )
+from app.services import seat_source
 from app.services import user_event_handlers as handlers
+from app.telemetry.metrics import DLQ_MESSAGES
 from app.workers.backoff import sleep_or_stop
 
 RETRY_DELAYS = (0.5, 2.0, 5.0)
@@ -104,6 +107,9 @@ class ConsumerWorker:
         if topic == topics.USER_DELETED:
             await handlers.process_user_deleted(self._factory, UserDeletedEvent.model_validate(body), self._clock)
             return
+        if topic == topics.SUBSCRIPTION_CHANGED:
+            await seat_source.process_subscription_changed(self._factory, SubscriptionChangedPayload.model_validate(body), self._clock)
+            return
         if topic != topics.USER_EVENTS:
             raise ValueError(f"unexpected topic {msg.topic}")
         envelope = UserEventEnvelope.model_validate(body)
@@ -132,6 +138,7 @@ class ConsumerWorker:
             "failed_at": iso_z(self._clock.now()),
         }
         key = letter["key"] or f"{msg.topic}:{msg.partition}:{msg.offset}"
+        DLQ_MESSAGES.inc()
         logger.error("message dead-lettered", topic=msg.topic, partition=msg.partition, offset=msg.offset,
                      attempts=attempts, error=type(exc).__name__)
         while True:

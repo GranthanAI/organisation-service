@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.seat_state import SeatState
@@ -23,6 +23,13 @@ class SeatStateRepository:
 
     async def get(self, org_id: uuid.UUID) -> SeatState | None:
         return await self.session.get(SeatState, org_id)
+
+    async def refreshable_ids(self, after: uuid.UUID | None, limit: int) -> list[uuid.UUID]:
+        """Organisations whose seats billing may know about: source billing, or any plan but the pilot. Keyset on org_id."""
+        stmt = select(SeatState.org_id).where(or_(SeatState.source == "billing", SeatState.plan_code != "pilot"))
+        if after is not None:
+            stmt = stmt.where(SeatState.org_id > after)
+        return list((await self.session.execute(stmt.order_by(SeatState.org_id).limit(limit))).scalars())
 
     async def lock_for_update(self, org_id: uuid.UUID) -> SeatState | None:
         """SELECT ... FOR UPDATE: a second transaction locking the same org waits until this one ends."""

@@ -63,7 +63,7 @@ class WorkerManager:
         producer = KafkaEventProducer()      # for the DLQ
         await producer.start()
         try:
-            consumer = KafkaEventConsumer(topics.CONSUMED_TOPICS)
+            consumer = KafkaEventConsumer(topics.consumed_topics())
             await ConsumerWorker(consumer, producer, get_session_factory()).run(stop)
         finally:
             await producer.stop()
