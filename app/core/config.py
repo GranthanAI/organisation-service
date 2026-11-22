@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     INVITES_PER_ORG_PER_DAY: int = 200
     CSV_MAX_ROWS: int = 5000
     CSV_MAX_BYTES: int = 1_048_576
+    MAX_REQUEST_BYTES: int = 262_144       # any request body over this is 413 (the CSV upload route gets CSV_MAX_BYTES + 64 KiB)
     CSV_ROWS_PER_ORG_PER_DAY: int = 5000   # rows created by CSV uploads per organisation per UTC day
 
     # --- Pilots and seats ---

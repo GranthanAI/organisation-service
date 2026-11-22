@@ -30,6 +30,8 @@ ERROR_STATUS: dict[str, int] = {
     "IDEMPOTENCY_IN_PROGRESS": 409,
     # 412
     "VERSION_CONFLICT": 412,
+    # 413
+    "REQUEST_TOO_LARGE": 413,
     # 422
     "PUBLIC_EMAIL_DOMAIN": 422,
     "CSV_INVALID": 422,

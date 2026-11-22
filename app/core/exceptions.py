@@ -150,6 +150,10 @@ class PublicEmailDomain(DomainError):
     code = "PUBLIC_EMAIL_DOMAIN"
 
 
+class RequestTooLarge(DomainError):
+    code = "REQUEST_TOO_LARGE"
+
+
 class CsvInvalid(DomainError):
     code = "CSV_INVALID"
 

@@ -12,6 +12,7 @@ from app.core.logging import logger
 from app.db.postgres import dispose_engine
 from app.middleware.correlation import CorrelationIDMiddleware
 from app.middleware.exception_handler import register_exception_handlers
+from app.middleware.request_size import RequestSizeLimitMiddleware
 from app.security.service_tokens import load_service_tokens
 from app.telemetry import loop_lag
 from app.workers.manager import WorkerManager
@@ -44,6 +45,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.add_middleware(RequestSizeLimitMiddleware)   # inside the correlation id, before any route reads a body
 app.add_middleware(CorrelationIDMiddleware)
 register_exception_handlers(app)
 app.include_router(api_router)
