@@ -19,6 +19,9 @@ JOBS_FAILED = Counter("org_jobs_failed", "Jobs given up on after their last atte
 EMAIL_SENT = Counter("org_email_sent", "Invite emails sent (counter, _total)")
 EMAIL_DEFERRED = Counter("org_email_deferred", "Invite email sends deferred by the global send rate (counter, _total)")
 
+# --- domain verification ---
+DOMAIN_CHECKS = Counter("org_domain_checks", "DNS checks of a domain TXT record (counter, _total)", ["result"])
+
 # --- event loop ---
 EVENT_LOOP_LAG = Gauge("org_event_loop_lag_seconds", "How late the event-loop monitor woke up (0 when the loop is idle)")
 

@@ -17,6 +17,13 @@ AUDIT_INVITE_CSV_UPLOADED = "invite.csv_uploaded"
 AUDIT_INVITE_LINK_CREATED = "invite_link.created"
 AUDIT_INVITE_LINK_URL_VIEWED = "invite_link.url_viewed"
 AUDIT_DOMAIN_VERIFIED = "domain.verified"
+AUDIT_DOMAIN_ADDED = "domain.added"
+AUDIT_DOMAIN_UPDATED = "domain.updated"
+AUDIT_DOMAIN_REMOVED = "domain.removed"
+AUDIT_DOMAIN_UNVERIFIED = "domain.unverified"
+AUDIT_JOIN_REQUEST_CREATED = "join_request.created"
+AUDIT_JOIN_REQUEST_APPROVED = "join_request.approved"
+AUDIT_JOIN_REQUEST_DECLINED = "join_request.declined"
 AUDIT_POLICY_CHANGED = "policy.changed"
 AUDIT_ORG_OWNER_MISSING = "org.owner_missing"
 AUDIT_ORG_DETAILS_CHANGED = "org.details_changed"
@@ -25,6 +32,8 @@ AUDIT_ORG_OWNERSHIP_TRANSFERRED = "org.ownership_transferred"
 AUDIT_ACTIONS = frozenset({
     AUDIT_MEMBER_JOINED, AUDIT_MEMBER_LEFT, AUDIT_MEMBER_REMOVED, AUDIT_MEMBER_ROLE_CHANGED, AUDIT_ORG_CREATED,
     AUDIT_ORG_STATUS_CHANGED, AUDIT_SEATS_SET, AUDIT_INVITE_CREATED, AUDIT_INVITE_REVOKED, AUDIT_INVITE_RESENT, AUDIT_DOMAIN_VERIFIED,
+    AUDIT_DOMAIN_ADDED, AUDIT_DOMAIN_UPDATED, AUDIT_DOMAIN_REMOVED, AUDIT_DOMAIN_UNVERIFIED,
+    AUDIT_JOIN_REQUEST_CREATED, AUDIT_JOIN_REQUEST_APPROVED, AUDIT_JOIN_REQUEST_DECLINED,
     AUDIT_INVITE_CSV_UPLOADED, AUDIT_INVITE_LINK_CREATED, AUDIT_INVITE_LINK_URL_VIEWED,
     AUDIT_POLICY_CHANGED, AUDIT_ORG_OWNER_MISSING, AUDIT_ORG_DETAILS_CHANGED, AUDIT_ORG_OWNERSHIP_TRANSFERRED,
 })
@@ -46,9 +55,10 @@ class RateLimitBucket:
 RATE_INVITE_CREATE = RateLimitBucket("invite_create", 30, 60, "user", fail_closed=True)
 RATE_CSV_UPLOAD = RateLimitBucket("csv_upload", 5, 3600, "user", fail_closed=True)
 RATE_INVITE_PREVIEW = RateLimitBucket("invite_preview", 30, 60, "ip", fail_closed=False)
+RATE_DOMAIN_VERIFY = RateLimitBucket("domain_verify", 10, 3600, "domain", fail_closed=False)    # per org + domain
 RATE_INVITE_ACCEPT = RateLimitBucket("invite_accept", 10, 60, "user", fail_closed=False)
 
-RATE_BUCKETS = {b.name: b for b in (RATE_INVITE_CREATE, RATE_CSV_UPLOAD, RATE_INVITE_PREVIEW, RATE_INVITE_ACCEPT)}
+RATE_BUCKETS = {b.name: b for b in (RATE_INVITE_CREATE, RATE_CSV_UPLOAD, RATE_INVITE_PREVIEW, RATE_INVITE_ACCEPT, RATE_DOMAIN_VERIFY)}
 
 # --- Idempotency ---
 IDEMPOTENCY_HEADER = "Idempotency-Key"
@@ -84,6 +94,14 @@ JOB_INVITE_SEND = "invite.send"
 JOB_INVITES_EXPIRE = "invites.expire"
 JOB_INVITES_PURGE = "invites.purge"
 JOB_CSV_BATCHES_FINISH = "csv.batches.finish"
+JOB_DOMAINS_VERIFY = "domains.verify"
+JOB_DOMAINS_RECHECK = "domains.recheck"
+JOB_JOIN_REQUESTS_EXPIRE = "join_requests.expire"
+DOMAIN_VERIFY_WINDOW_DAYS = 7          # the hourly check of a pending domain stops this long after it was added
+DOMAIN_RECHECK_DAYS = 30
+DOMAIN_RECHECK_FAILURES = 3            # failed re-checks in a row that remove the verification
+JOIN_REQUEST_EXPIRE_DAYS = 30
+DOMAIN_JOB_BATCH = 200
 CSV_ERRORS_PURGE_AFTER_DAYS = 90
 CSV_ERRORS_PREVIEW = 20
 LINK_MAX_USES = 5000

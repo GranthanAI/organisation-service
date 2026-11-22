@@ -40,8 +40,8 @@ def rules_violations(source: str) -> list[str]:
         elif top == "app":
             if mod == "app.core.config":
                 problems.append("imports app.core.config (rules take configuration as arguments)")
-            elif not (mod == "app.core" or mod.startswith("app.core.")):
-                problems.append(f"imports {mod} (only app.core is allowed)")
+            elif not (mod == "app.core" or mod.startswith("app.core.") or (mod.startswith("app.services.") and mod.endswith("_rules"))):
+                problems.append(f"imports {mod} (only app.core and other *_rules modules are allowed)")
         elif top not in STDLIB:
             problems.append(f"imports third-party {mod}")
     for node in ast.walk(ast.parse(source)):

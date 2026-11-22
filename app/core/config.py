@@ -91,6 +91,7 @@ class Settings(BaseSettings):
 
     # --- Domains ---
     DOMAIN_AUTO_JOIN_ENABLED: bool = False
+    DNS_NAMESERVERS: str = ""              # comma-separated resolvers for domain verification, e.g. "1.1.1.1,8.8.8.8"; empty = the system resolver
 
     @property
     def is_production(self) -> bool:

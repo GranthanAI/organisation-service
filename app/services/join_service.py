@@ -31,6 +31,7 @@ from app.events.producers import enqueue
 from app.events.schemas import OrgMemberJoined
 from app.models.invite import Invite
 from app.models.membership import Membership
+from app.repositories.domain_repository import DomainRepository
 from app.repositories.known_user_repository import KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
 from app.repositories.org_repository import OrgRepository
@@ -102,6 +103,9 @@ async def join(
         if mapped is None:
             raise
         raise mapped from exc
+
+    # 4b. a pending join request of this user is moot now: declined, with no decider (approve sets its own result after)
+    await DomainRepository(session).decline_pending_for_user(user_id, now)
 
     # 5. the invite
     if invite is not None:

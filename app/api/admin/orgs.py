@@ -27,10 +27,17 @@ from app.schemas.admin import (
     SeatStateOut,
     SetSeatsIn,
 )
-from app.schemas.org_v1 import AuditPageOut, InviteResultOut, MemberPageOut
+from app.schemas.org_v1 import AuditPageOut, DomainOut, InviteResultOut, MemberPageOut
 from app.security.dependencies import require_staff
 from app.security.models import CurrentUser
-from app.services import audit_query_service, invite_service, org_member_service, org_service, seat_service
+from app.services import (
+    audit_query_service,
+    domain_service,
+    invite_service,
+    org_member_service,
+    org_service,
+    seat_service,
+)
 from app.services.permission_rules import Action
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT
 
@@ -156,3 +163,14 @@ async def staff_resend_invite(org_id: uuid.UUID, invite_id: uuid.UUID, body: Rea
     async with unit_of_work(factory) as session:
         invite = await invite_service.resend(session, org_id, invite_id, actor, staff=True, reason=body.reason, clock=clock)
     return InviteResultOut(email=str(invite.email), result="resent", invite_id=invite.id)
+
+
+@router.post("/{org_id}/domains/{domain}/manual-verify", response_model=DomainOut)
+async def manual_verify_domain(org_id: uuid.UUID, domain: str, body: ReasonIn, actor: CurrentUser = Writer,
+                               factory: async_sessionmaker = Depends(get_session_factory_dep), clock: Clock = Depends(get_clock)):
+    """Verify a domain by hand (a college whose IT is slow). Same ownership rules; a staff-verified domain is never DNS-rechecked."""
+    org_service.require_staff_action(Action.STAFF_MANUAL_DOMAIN_VERIFY, actor)
+    async with unit_of_work(factory) as session:
+        row = await domain_service.manual_verify(session, actor, org_id, domain, body.reason, clock)
+    return DomainOut(domain=row.domain, status=domain_service.status_of(row), include_subdomains=row.include_subdomains,
+                     auto_join=row.auto_join, verified_at=row.verified_at, verify_method=row.verify_method, added_at=row.added_at)

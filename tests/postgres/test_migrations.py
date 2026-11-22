@@ -304,6 +304,7 @@ def test_0009_up_down_up_keeps_data_and_maps_stopped_back(empty_db):
     testdb.upgrade(empty_db, "0009_domains")
     cols = columns(empty_db, "org_domains")
     assert cols["include_subdomains"] is False and cols["failed_checks"] is False and cols["last_checked_at"] is True
+    assert cols["added_at"] is False
     (row,) = fetch(empty_db, "SELECT include_subdomains, failed_checks, last_checked_at, auto_join FROM org_domains")
     assert (row["include_subdomains"], row["failed_checks"], row["last_checked_at"], row["auto_join"]) == (False, 0, None, False)
     assert columns(empty_db, "invite_batches")["errors_note"] is True
@@ -319,7 +320,7 @@ def test_0009_up_down_up_keeps_data_and_maps_stopped_back(empty_db):
 
     asyncio.run(stop_one())
     testdb.downgrade(empty_db, "0008_csv_and_links")
-    assert not ({"include_subdomains", "failed_checks", "last_checked_at"} & set(columns(empty_db, "org_domains")))
+    assert not ({"include_subdomains", "failed_checks", "last_checked_at", "added_at"} & set(columns(empty_db, "org_domains")))
     assert "errors_note" not in columns(empty_db, "invite_batches")
     assert fetch(empty_db, "SELECT status FROM invite_batches")[0]["status"] == "done"      # stopped maps back to done
     assert fetch(empty_db, "SELECT count(*) AS n FROM org_domains")[0]["n"] == 1             # the data survives

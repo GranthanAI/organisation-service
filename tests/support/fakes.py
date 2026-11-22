@@ -96,3 +96,28 @@ class FakeEmailSender:
         """The invite tokens in the links of the emails sent so far (what a recipient would click)."""
         import re
         return [m.group(1) for e in self.sent for m in [re.search(r"/join/([A-Za-z0-9_-]+)", e.text)] if m]
+
+
+class FakeDns:
+    """DnsClient for tests: no real DNS. `records[name]` is a list of TXT records, each a list of character-strings (the
+    pieces a long TXT value is split into); `errors` names that time out; `calls` is every name looked up."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, list[list[str]]] = {}
+        self.errors: set[str] = set()
+        self.calls: list[str] = []
+
+    def publish(self, domain: str, token: str, *, split: bool = False, extra: tuple[str, ...] = ()) -> None:
+        value = f"granthan-verify={token}"
+        pieces = [value[:10], value[10:25], value[25:]] if split else [value]
+        self.records[domain] = [list(extra and [e] or ["v=spf1 -all"]) for e in extra] + [pieces]
+
+    def clear(self, domain: str) -> None:
+        self.records.pop(domain, None)
+
+    async def txt(self, name: str):
+        from app.clients.dns_client import TxtLookup
+        self.calls.append(name)
+        if name in self.errors:
+            return TxtLookup(error=True)
+        return TxtLookup(["".join(parts) for parts in self.records.get(name, [])])

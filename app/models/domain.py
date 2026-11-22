@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -22,6 +22,7 @@ class OrgDomain(Base):
     include_subdomains: Mapped[bool] = mapped_column(Boolean, default=False)
     failed_checks: Mapped[int] = mapped_column(Integer, default=0)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class JoinRequest(Base):

@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core import constants
-from app.core.clock import Clock
+from app.core.clock import Clock, FixedClock
 from app.core.enums import EndReason
 from app.core.logging import logger
 from app.db.session import unit_of_work
@@ -21,7 +21,7 @@ from app.repositories.invite_repository import InviteRepository
 from app.repositories.known_user_repository import PLACEHOLDER_DOMAIN, KnownUserRepository
 from app.repositories.membership_repository import MembershipRepository
 from app.repositories.processed_event_repository import ProcessedEventRepository
-from app.services import audit_service, membership_service
+from app.services import audit_service, join_request_service, membership_service
 from app.services.email_rules import normalize_email
 
 CONSUMER_USER_REGISTERED = "user_registered"
@@ -58,24 +58,29 @@ async def process_user_registered(factory: SessionFactory, event: UserRegistered
 
 
 # ------------------------------------------------------------------ EmailVerified
-async def on_email_verified(session: AsyncSession, user_id: UUID, email: str) -> None:
-    """Hook for Phase 9: domain auto-join runs here (only when DOMAIN_AUTO_JOIN_ENABLED, and never from the
-    unverified UserRegistered event). Does nothing yet."""
+async def on_email_verified(session: AsyncSession, user_id: UUID, email: str, clock: Clock) -> None:
+    """Domain auto-join (Phase 9): only when DOMAIN_AUTO_JOIN_ENABLED, only for THIS user, and never from the unverified
+    UserRegistered event. A full org gets a pending join request instead. Runs in the handler's transaction, so it is
+    deduplicated by processed_events with the rest."""
+    outcome = await join_request_service.auto_join_on_email_verified(session, user_id, clock)
+    if outcome in ("joined", "requested"):
+        logger.info("domain auto-join", outcome=outcome)
 
 
-async def handle_email_verified(session: AsyncSession, event: EmailVerifiedPayload, now: datetime) -> None:
+async def handle_email_verified(session: AsyncSession, event: EmailVerifiedPayload, now: datetime,
+                                clock: Clock | None = None) -> None:
     users = KnownUserRepository(session)
     known = await users.get(event.user_id)
     if known is not None and known.deleted_at is not None:
         return
     email = normalize_email(event.email)
     await users.set_email_verified(event.user_id, email, event.timestamp, now)   # keeps the earliest time
-    await on_email_verified(session, event.user_id, email)
+    await on_email_verified(session, event.user_id, email, clock or FixedClock(now))
 
 
 async def process_email_verified(factory: SessionFactory, event: EmailVerifiedPayload, clock: Clock) -> bool:
     return await process_once(factory, clock, CONSUMER_EMAIL_VERIFIED, event.event_id,
-                              lambda s: handle_email_verified(s, event, clock.now()))
+                              lambda s: handle_email_verified(s, event, clock.now(), clock))
 
 
 # ------------------------------------------------------------------ user.deleted

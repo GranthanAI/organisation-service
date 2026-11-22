@@ -65,3 +65,14 @@ def fake_throttle_redis(monkeypatch):
     monkeypatch.setattr(email_throttle, "get_redis", lambda: fake)
     email_throttle.reset_fallback()
     yield fake
+
+
+@pytest.fixture(autouse=True)
+def fake_dns(monkeypatch):
+    """No test ever does a real DNS lookup: domain checks use this fake. Publish records with fake_dns.publish(domain, token)."""
+    from app.services import domain_service
+    from tests.support.fakes import FakeDns
+
+    fake = FakeDns()
+    monkeypatch.setattr(domain_service, "get_dns_client", lambda: fake)
+    return fake

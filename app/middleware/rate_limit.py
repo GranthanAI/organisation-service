@@ -119,3 +119,14 @@ def rate_limit(
         await check(request, client_ip(request), redis, clock)
 
     return by_ip
+
+
+async def hit_fail_open(redis: Redis, clock: Clock, bucket: RateLimitBucket, who: str) -> None:
+    """For limits keyed by something other than the caller (a domain): count one request, raise RateLimited over the
+    limit, and let the request through when the store is down."""
+    try:
+        await hit(redis, clock, bucket.name, who, bucket.limit, bucket.window_seconds)
+    except RateLimited:
+        raise
+    except Exception:
+        logger.warning("rate limit store unavailable, letting the request through", bucket=bucket.name)

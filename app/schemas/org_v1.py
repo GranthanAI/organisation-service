@@ -259,3 +259,79 @@ class LinkListOut(BaseModel):
 class LinkUrlOut(BaseModel):
     link_id: uuid.UUID
     url: str
+
+
+# ---- domains and join requests (Phase 9)
+class DomainAddIn(_Request):
+    domain: str = Field(min_length=3, max_length=253)
+    include_subdomains: bool = False
+
+
+class DomainPatchIn(_Request):
+    auto_join: bool | None = None
+    include_subdomains: bool | None = None
+
+
+class DnsRecordOut(BaseModel):
+    type: str
+    host: str
+    value: str
+
+
+class DomainAddedOut(BaseModel):
+    domain: str
+    status: str
+    include_subdomains: bool
+    dns_record: DnsRecordOut
+    instructions: str
+
+
+class DomainOut(BaseModel):
+    domain: str
+    status: str                       # pending | verified
+    include_subdomains: bool
+    auto_join: bool
+    verified_at: datetime | None
+    verify_method: str | None
+    added_at: datetime | None = None
+    dns_record: DnsRecordOut | None = None      # owners and admins only, for a pending domain
+
+
+class DomainListOut(BaseModel):
+    items: list[DomainOut]
+
+
+class DomainMatchOut(BaseModel):
+    org_id: uuid.UUID
+    org_name: str
+    org_type: str
+    can_request: bool
+    pending_request_id: uuid.UUID | None = None
+
+
+class JoinRequestCreatedOut(BaseModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    status: str
+
+
+class JoinRequestRowOut(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    name: str | None
+    email: str | None
+    domain: str
+    status: str
+    created_at: datetime
+    decided_by: uuid.UUID | None
+    decided_at: datetime | None
+
+
+class JoinRequestPageOut(BaseModel):
+    items: list[JoinRequestRowOut]
+    next_cursor: str | None
+
+
+class JoinRequestDecisionOut(BaseModel):
+    id: uuid.UUID
+    status: str

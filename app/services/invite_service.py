@@ -45,7 +45,7 @@ from app.repositories.org_repository import OrgRepository
 from app.repositories.seat_state_repository import SeatStateRepository
 from app.security.models import CurrentUser, OrgContext
 from app.security.tokens import hash_token, invite_token_hash
-from app.services import audit_service, job_service, join_service
+from app.services import audit_service, domain_rules, job_service, join_service
 from app.services.email_rules import normalize_email
 from app.utils.ids import uuid7
 from app.utils.pagination import DEFAULT_LIMIT, MAX_LIMIT, decode_cursor, encode_cursor
@@ -310,10 +310,9 @@ async def _accept_link(session: AsyncSession, user: CurrentUser, link: Invite, b
     if error is not None:
         raise error
     if link.domain_restricted:
-        domain = user.email.rpartition("@")[2].lower()
-        verified = {d.domain.lower() for d in await DomainRepository(session).list_for_org(link.org_id)
-                    if d.verified_at is not None}
-        if domain not in verified:
+        # the SAME matching rule as auto-join: a verified domain of this org, exact or through include_subdomains
+        owner = await DomainRepository(session).find_verified_owner(domain_rules.email_domain(user.email))
+        if owner is None or owner[0] != link.org_id:
             raise InviteEmailMismatch("This link is only for people with an email address from the organisation")
     await join_service.join(session, link.org_id, user.id, JoinSource.LINK, Role.MEMBER, link, actor=user, clock=clock)
     return body
